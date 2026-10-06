@@ -1308,9 +1308,18 @@ def pagina_notificacion():
                                     value=parse_date(safe_get(exp, 'fecha_notificacion_personal')), key="fnp")
         if st.checkbox("Sin fecha notificación", value=parse_date(safe_get(exp, 'fecha_notificacion_personal')) is None, key="sin_fnp"):
             fecha_notif = None
-        oficio_valla = st.text_input("Oficio de solicitud de fijación de valla",
-                                     value=safe_get(exp, 'oficio_fijacion_valla', '') or '')
-        st.caption("En la notificación se entrega también el oficio de solicitud de fijación de valla.")
+        _ov = safe_get(exp, 'oficio_fijacion_valla', '') or ''
+        # Solo Sí / No (si había texto antiguo se interpreta como Sí)
+        if _ov not in ("", "Sí", "No"):
+            _ov = "Sí"
+        oficio_valla = st.radio(
+            "Oficio de solicitud de fijación de valla",
+            ["No", "Sí"],
+            index=1 if _ov == "Sí" else 0,
+            horizontal=True,
+            key="oficio_valla_si_no",
+        )
+        st.caption("Marca si se entregó o no el oficio de fijación de valla.")
 
     # 3. Soportes de publicación
     with st.expander("3. Soportes de publicación (según tipo de licencia)"):
@@ -1609,6 +1618,81 @@ def pagina_reportes():
     else:
         st.dataframe(df_rep, use_container_width=True, hide_index=True)
         _descargar_reporte(df_rep, "reporte_" + tipo.lower().replace(" ", "_")[:30])
+
+    # ── Gráficos estadísticos ──
+    st.divider()
+    st.subheader("📊 Gráficos estadísticos")
+    if df.empty:
+        st.caption("Sin datos para graficar.")
+    else:
+        g1, g2 = st.columns(2)
+
+        with g1:
+            st.markdown("**Expedientes por estado**")
+            if "estado" in df.columns:
+                por_est = df["estado"].fillna("Sin estado").astype(str).value_counts()
+                st.bar_chart(por_est)
+            st.markdown("**Expedientes por modalidad**")
+            if "modalidad" in df.columns:
+                por_mod = df["modalidad"].fillna("Sin modalidad").astype(str).value_counts()
+                st.bar_chart(por_mod)
+
+        with g2:
+            st.markdown("**Pagos 30% (anticipo)**")
+            if "pago_30_anticipo" in df.columns:
+                p30 = df["pago_30_anticipo"].fillna("Sin registro").astype(str).replace({"": "Sin registro", "None": "Sin registro"})
+                st.bar_chart(p30.value_counts())
+            st.markdown("**Pagos 70% (saldo)**")
+            if "saldo_70" in df.columns:
+                p70 = df["saldo_70"].fillna("Sin registro").astype(str).replace({"": "Sin registro", "None": "Sin registro"})
+                st.bar_chart(p70.value_counts())
+
+        # Radicaciones por mes (año en curso o todos)
+        st.markdown("**Radicaciones por mes**")
+        meses_lab = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+        if "fecha_radicacion" in df.columns:
+            def _ym(val):
+                d = parse_date(val)
+                return (d.year, d.month) if d else None
+            ym = df["fecha_radicacion"].apply(_ym).dropna()
+            if len(ym) > 0:
+                años_disp = sorted({y for y, m in ym}, reverse=True)
+                anio_g = st.selectbox("Año del gráfico de radicaciones", años_disp, key="graf_anio_rad")
+                conteo = {m: 0 for m in range(1, 13)}
+                for y, m in ym:
+                    if y == anio_g:
+                        conteo[m] += 1
+                serie = pd.Series({meses_lab[m - 1]: conteo[m] for m in range(1, 13)})
+                st.bar_chart(serie)
+            else:
+                st.caption("No hay fechas de radicación.")
+
+        # Situación de plazos (solo activos)
+        st.markdown("**Situación de plazos (expedientes activos)**")
+        activos = df[~df["estado"].astype(str).isin(["Ejecutoriado", "Archivado", "Negado", "None", ""])].copy() if "estado" in df.columns else df.copy()
+        cats = {"Vencido": 0, "≤ 5 días": 0, "6–15 días": 0, "> 15 días": 0, "Sin fecha": 0}
+        for _, row in activos.iterrows():
+            fv = parse_date(row.get("fecha_vencimiento_45"))
+            if not fv:
+                cats["Sin fecha"] += 1
+                continue
+            if fv < hoy:
+                cats["Vencido"] += 1
+            else:
+                rest = dias_habiles_entre(hoy, fv)
+                if rest <= 5:
+                    cats["≤ 5 días"] += 1
+                elif rest <= 15:
+                    cats["6–15 días"] += 1
+                else:
+                    cats["> 15 días"] += 1
+        st.bar_chart(pd.Series(cats))
+
+        # Entrega cumplida
+        if "entrega_cumplida" in df.columns:
+            st.markdown("**Entrega cumplida**")
+            ent = df["entrega_cumplida"].fillna("No registrado").astype(str).replace({"": "No registrado", "None": "No registrado"})
+            st.bar_chart(ent.value_counts())
 
     # Respaldo BD
     st.divider()
