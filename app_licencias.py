@@ -452,6 +452,16 @@ def pagina_dashboard():
 # ─────────────────────────────────────────────
 # Consulta
 # ─────────────────────────────────────────────
+def _normalizar_url(url: str) -> str:
+    """Asegura que el enlace tenga esquema http/https para que sea clicable."""
+    if not url or not str(url).strip():
+        return ""
+    u = str(url).strip()
+    if u.lower().startswith(("http://", "https://")):
+        return u
+    return f"https://{u}"
+
+
 def pagina_consulta():
     st.title("🔍 Consulta de Expedientes")
     col1, col2 = st.columns(2)
@@ -491,7 +501,40 @@ def pagina_consulta():
             st.warning("No se encontraron expedientes.")
         else:
             st.success(f"Se encontraron {len(df)} expediente(s)")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            # Tabla principal (sin el link para no mezclarlo; se muestra aparte)
+            cols_tabla = [c for c in [
+                "numero_radicado", "fecha_radicacion", "modalidad", "estado",
+                "propietario", "cedula_titular", "direccion", "barrio",
+                "fecha_vencimiento_45", "alerta", "numero_resolucion",
+                "fecha_resolucion", "tiene_ejecutoria", "fecha_ejecutoria",
+            ] if c in df.columns]
+            st.dataframe(df[cols_tabla] if cols_tabla else df, use_container_width=True, hide_index=True)
+
+            # Link de publicación: se muestra aparte, clicable hacia el documento
+            st.divider()
+            st.subheader("🔗 Link de publicación (acto en página web)")
+            st.caption("Enlace directo al documento publicado. Abre en una pestaña nueva.")
+            n_rows = len(df)
+            for i, (_, row) in enumerate(df.iterrows()):
+                rad = safe_get(row, "numero_radicado") or "—"
+                link_raw = safe_get(row, "link_publicacion") or ""
+                link = _normalizar_url(link_raw)
+                with st.container():
+                    c_a, c_b = st.columns([1, 3])
+                    with c_a:
+                        st.markdown(f"**Radicado:** `{rad}`")
+                    with c_b:
+                        if link:
+                            st.markdown(
+                                f'<a href="{link}" target="_blank" rel="noopener noreferrer">'
+                                f"📄 Abrir documento de publicación</a>",
+                                unsafe_allow_html=True,
+                            )
+                            st.caption(link)
+                        else:
+                            st.caption("Sin link de publicación registrado.")
+                if i < n_rows - 1:
+                    st.markdown("---")
 
 # ─────────────────────────────────────────────
 # Nuevo / Editar expediente (guardado parcial)
