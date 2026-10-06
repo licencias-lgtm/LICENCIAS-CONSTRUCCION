@@ -975,11 +975,78 @@ def pagina_expedientes():
     st.dataframe(df_f[cols_show].head(80), use_container_width=True, hide_index=True)
 
 # ─────────────────────────────────────────────
-# Aprobaciones por área
+# Roles profesionales (solo lectura + aprobación)
+# ─────────────────────────────────────────────
+def es_revisor_profesional(rol=None):
+    """Revisores de área: solo ven información y aprueban por radicado."""
+    rol = rol or st.session_state.get("rol", "")
+    return any(x in rol for x in ("Jurídico", "Arquitectónico", "Ingeniería")) and rol != "Administrador"
+
+
+def _mostrar_info_expediente_solo_lectura(exp):
+    """Muestra los datos del expediente sin campos editables."""
+    st.subheader("📋 Información del expediente (solo lectura)")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(f"**N° Radicado:** {safe_get(exp, 'numero_radicado') or '—'}")
+        st.markdown(f"**Fecha radicación:** {safe_get(exp, 'fecha_radicacion') or '—'}")
+        st.markdown(f"**Modalidad:** {safe_get(exp, 'modalidad') or '—'}")
+        st.markdown(f"**Estado:** {safe_get(exp, 'estado') or '—'}")
+        st.markdown(f"**Vencimiento 45 días:** {safe_get(exp, 'fecha_vencimiento_45') or '—'}")
+        st.markdown(f"**Alerta:** {safe_get(exp, 'alerta') or '—'}")
+    with c2:
+        st.markdown(f"**Propietario:** {safe_get(exp, 'propietario') or '—'}")
+        st.markdown(f"**Cédula / NIT:** {safe_get(exp, 'cedula_titular') or '—'}")
+        st.markdown(f"**Apoderado:** {safe_get(exp, 'apoderado') or '—'}")
+        st.markdown(f"**Celular:** {safe_get(exp, 'celular') or '—'}")
+        st.markdown(f"**Dirección:** {safe_get(exp, 'direccion') or '—'}")
+        st.markdown(f"**Barrio:** {safe_get(exp, 'barrio') or '—'}")
+        st.markdown(f"**Zona:** {safe_get(exp, 'zona') or '—'}")
+    with c3:
+        st.markdown(f"**Ficha catastral:** {safe_get(exp, 'ficha_catastral') or '—'}")
+        st.markdown(f"**Matrícula:** {safe_get(exp, 'matricula_inmobiliaria') or '—'}")
+        st.markdown(f"**Superficie:** {safe_get(exp, 'superficie') or '—'}")
+        st.markdown(f"**Valor obra:** {safe_get(exp, 'valor_obra') or '—'}")
+        st.markdown(f"**N° Resolución:** {safe_get(exp, 'numero_resolucion') or '—'}")
+        st.markdown(f"**Fecha resolución:** {safe_get(exp, 'fecha_resolucion') or '—'}")
+
+    with st.expander("Pagos", expanded=False):
+        st.write(
+            f"30%: **{safe_get(exp, 'pago_30_anticipo') or '—'}** | "
+            f"Valor: {safe_get(exp, 'valor_pago_30') or '—'} | "
+            f"Recibo: {safe_get(exp, 'numero_recibo_30') or '—'}"
+        )
+        st.write(
+            f"70%: **{safe_get(exp, 'saldo_70') or '—'}** | "
+            f"Valor: {safe_get(exp, 'valor_pago_70') or '—'} | "
+            f"Recibo: {safe_get(exp, 'numero_recibo_70') or '—'}"
+        )
+        st.write(f"Confirma 70%: {safe_get(exp, 'confirma_pago_70') or '—'}")
+
+    with st.expander("Revisiones y plazos", expanded=False):
+        st.write(f"Ingreso jurídica: {safe_get(exp, 'fecha_ingreso_juridica') or '—'} → Salida: {safe_get(exp, 'fecha_salida_juridica') or '—'}")
+        st.write(f"Ingreso arquitectura: {safe_get(exp, 'fecha_ingreso_arquitectura') or '—'} → Salida: {safe_get(exp, 'fecha_salida_arquitectura') or '—'}")
+        st.write(f"Ingreso estructural: {safe_get(exp, 'fecha_ingreso_estructural') or '—'} → Salida: {safe_get(exp, 'fecha_salida_estructural') or '—'}")
+        st.write(f"Días en estudio: {safe_get(exp, 'dias_en_estudio') or '—'}")
+
+    with st.expander("Aprobaciones registradas", expanded=True):
+        st.write(f"Jurídica: **{safe_get(exp, 'aprobacion_juridica') or 'Pendiente'}**")
+        st.write(f"Arquitectura: **{safe_get(exp, 'aprobacion_arquitectura') or 'Pendiente'}**")
+        st.write(f"Ingeniería: **{safe_get(exp, 'aprobacion_ingenieria') or 'Pendiente'}**")
+
+    with st.expander("Observaciones", expanded=False):
+        st.text(safe_get(exp, 'observaciones') or "Sin observaciones.")
+
+
+# ─────────────────────────────────────────────
+# Aprobaciones por área (profesionales: solo aprobar)
 # ─────────────────────────────────────────────
 def pagina_aprobaciones():
     st.title("✅ Aprobaciones por Área")
     st.write(f"Usuario: **{st.session_state['nombre']}** ({st.session_state['rol']})")
+    st.caption("Los profesionales solo pueden **consultar** el expediente y **registrar su aprobación** por número de radicado. No pueden modificar otros datos.")
+
     conn = get_connection()
     df = pd.read_sql_query("SELECT * FROM expedientes ORDER BY id DESC", conn)
     conn.close()
@@ -996,29 +1063,53 @@ def pagina_aprobaciones():
         campo, titulo = "aprobacion_ingenieria", "Aprobación de Ingeniería"
     else:
         st.info("Esta sección es para revisores de Jurídica, Arquitectura e Ingeniería.")
-        st.dataframe(df[['numero_radicado', 'propietario', 'aprobacion_juridica',
-                         'aprobacion_arquitectura', 'aprobacion_ingenieria']].head(50),
-                     use_container_width=True, hide_index=True)
+        cols = [c for c in ['numero_radicado', 'propietario', 'estado',
+                            'aprobacion_juridica', 'aprobacion_arquitectura', 'aprobacion_ingenieria']
+                if c in df.columns]
+        st.dataframe(df[cols].head(50), use_container_width=True, hide_index=True)
         return
 
     st.subheader(titulo)
-    sel = st.selectbox("Seleccionar expediente", df['numero_radicado'].tolist())
-    exp = df[df['numero_radicado'] == sel].iloc[0]
-    st.write(f"**Propietario:** {safe_get(exp, 'propietario')}  |  **Estado:** {safe_get(exp, 'estado')}")
-    st.write(f"**Aprobación actual:** {safe_get(exp, campo, 'Pendiente')}")
-    decision = st.radio("Tu decisión", ["Pendiente", "Aprobado", "Rechazado", "Con observaciones"], horizontal=True)
-    obs = st.text_area("Observaciones de tu revisión")
-    if st.button("Registrar mi aprobación"):
+    # Buscar / seleccionar solo por radicado
+    busqueda = st.text_input("Buscar por número de radicado", key="apr_buscar_rad")
+    lista = df['numero_radicado'].astype(str).tolist()
+    if busqueda:
+        lista = [r for r in lista if busqueda.strip().lower() in r.lower()]
+        if not lista:
+            st.warning("No se encontró ningún radicado con ese criterio.")
+            return
+    sel = st.selectbox("Seleccionar número de radicado", lista, key="apr_sel_rad")
+    exp = df[df['numero_radicado'].astype(str) == str(sel)].iloc[0]
+
+    _mostrar_info_expediente_solo_lectura(exp)
+
+    st.divider()
+    st.subheader(f"Registrar {titulo}")
+    st.write(f"**Aprobación actual de tu área:** {safe_get(exp, campo, 'Pendiente') or 'Pendiente'}")
+    decision = st.radio(
+        "Tu decisión",
+        ["Pendiente", "Aprobado", "Rechazado", "Con observaciones"],
+        horizontal=True,
+        key="apr_decision",
+    )
+    obs = st.text_area("Observaciones de tu revisión (opcional)", key="apr_obs")
+    if st.button("✅ Registrar mi aprobación", type="primary", use_container_width=True):
         conn = get_connection()
         c = conn.cursor()
-        c.execute(f"UPDATE expedientes SET {campo}=?, ultima_actualizacion=? WHERE numero_radicado=?",
-                  (decision, datetime.now().strftime("%Y-%m-%d %H:%M"), sel))
-        if obs:
-            c.execute("UPDATE expedientes SET observaciones=? WHERE numero_radicado=?",
-                      ((safe_get(exp, 'observaciones') or '') + f"\n[{campo}] {obs}", sel))
+        ahora = datetime.now().strftime("%Y-%m-%d %H:%M")
+        c.execute(
+            f"UPDATE expedientes SET {campo}=?, ultima_actualizacion=? WHERE numero_radicado=?",
+            (decision, ahora, sel),
+        )
+        if obs and obs.strip():
+            prev = safe_get(exp, 'observaciones') or ''
+            c.execute(
+                "UPDATE expedientes SET observaciones=? WHERE numero_radicado=?",
+                (prev + f"\n[{campo} {ahora}] {obs.strip()}", sel),
+            )
         conn.commit()
         conn.close()
-        st.success(f"Aprobación registrada: {decision}")
+        st.success(f"Aprobación registrada: **{decision}** para el radicado **{sel}**")
         st.rerun()
 
 # ─────────────────────────────────────────────
@@ -1743,27 +1834,48 @@ def main():
         st.markdown(f"**{st.session_state['nombre']}**")
         st.caption(st.session_state['rol'])
         st.divider()
-        pagina = st.radio("Menú", [
-            "Dashboard",
-            "Consulta",
-            "Nuevo expediente",
-            "Actualizar expediente",
-            "Expedientes",
-            "Aprobaciones por Área",
-            "Proyección de Acto",
-            "Control de Firmas",
-            "Notificación y Entrega",
-            "Reportes",
-            "Información"
-        ])
+        # Menú restringido para revisores profesionales
+        if es_revisor_profesional():
+            opciones_menu = [
+                "Dashboard",
+                "Consulta",
+                "Aprobaciones por Área",
+                "Información",
+            ]
+            st.info("Acceso profesional: solo consulta y aprobación por radicado.")
+        else:
+            opciones_menu = [
+                "Dashboard",
+                "Consulta",
+                "Nuevo expediente",
+                "Actualizar expediente",
+                "Expedientes",
+                "Aprobaciones por Área",
+                "Proyección de Acto",
+                "Control de Firmas",
+                "Notificación y Entrega",
+                "Reportes",
+                "Información",
+            ]
+        pagina = st.radio("Menú", opciones_menu)
         st.divider()
-        st.markdown("**Respaldo de datos**")
-        st.caption("Descarga la BD después de guardar cambios importantes.")
-        boton_descarga_bd(key_suffix="sidebar")
-        st.divider()
+        if not es_revisor_profesional():
+            st.markdown("**Respaldo de datos**")
+            st.caption("Descarga la BD después de guardar cambios importantes.")
+            boton_descarga_bd(key_suffix="sidebar")
+            st.divider()
         if st.button("Cerrar sesión"):
             st.session_state['logged_in'] = False
             st.rerun()
+
+    # Bloqueo de seguridad: profesionales no pueden abrir pantallas de edición
+    paginas_edicion = {
+        "Nuevo expediente", "Actualizar expediente", "Expedientes",
+        "Proyección de Acto", "Control de Firmas", "Notificación y Entrega", "Reportes",
+    }
+    if es_revisor_profesional() and pagina in paginas_edicion:
+        st.warning("No tienes permiso para esta sección. Solo puedes consultar y aprobar por radicado.")
+        pagina = "Aprobaciones por Área"
 
     if pagina == "Dashboard":
         pagina_dashboard()
