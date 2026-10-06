@@ -515,34 +515,83 @@ def calcular_fechas_revision(fecha_ingreso_jur):
         "fecha_salida_estructural": salida_est,
     }
 
-def pagina_nuevo_editar():
-    st.title("➕ Nuevo / Actualizar Expediente")
-    st.info("Puedes guardar avances sin completar todos los campos. Solo el número de radicado es obligatorio para crear.")
-
-    # Mensaje post-guardado + oferta de respaldo
+def _mensajes_post_guardado(key_suffix=""):
+    """Muestra mensaje de éxito y oferta de respaldo tras guardar."""
     if st.session_state.get("msg_guardado"):
         st.success(st.session_state.pop("msg_guardado"))
     if st.session_state.get("ofrecer_backup"):
         st.warning("**Recomendado:** descarga un respaldo de la base de datos para no perder información al actualizar o redesplegar la app.")
-        boton_descarga_bd(key_suffix="post_save")
-        if st.button("Continuar sin descargar ahora", key="skip_backup"):
+        boton_descarga_bd(key_suffix=f"post_save_{key_suffix}")
+        if st.button("Continuar sin descargar ahora", key=f"skip_backup_{key_suffix}"):
             st.session_state["ofrecer_backup"] = False
             st.rerun()
 
-    conn = get_connection()
-    df = pd.read_sql_query("SELECT numero_radicado FROM expedientes ORDER BY id DESC", conn)
-    conn.close()
-    radicados = ["— Nuevo expediente —"] + df['numero_radicado'].tolist()
 
-    modo = st.selectbox("Modo", radicados)
-    es_nuevo = modo == "— Nuevo expediente —"
-    exp = None
-    if not es_nuevo:
-        conn = get_connection()
-        df_e = pd.read_sql_query("SELECT * FROM expedientes WHERE numero_radicado=?", conn, params=(modo,))
+def pagina_nuevo():
+    """Página exclusiva para crear un expediente nuevo."""
+    st.title("➕ Nuevo expediente")
+    st.info("Completa los datos del nuevo expediente. Solo el número de radicado es obligatorio. Puedes guardar avances parciales.")
+    _mensajes_post_guardado("nuevo")
+    _formulario_expediente(es_nuevo=True, exp=None, radicado_fijo=None)
+
+
+def pagina_actualizar():
+    """Página exclusiva para actualizar un expediente existente: muestra todos los datos y permite editar."""
+    st.title("✏️ Actualizar expediente")
+    st.info("Selecciona el expediente. Se cargan **todos** sus datos para que edites lo necesario y al final pulses **Actualizar y guardar**.")
+    _mensajes_post_guardado("act")
+
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query(
+            "SELECT numero_radicado, propietario, estado, fecha_radicacion FROM expedientes ORDER BY id DESC",
+            conn,
+        )
+    except Exception as e:
+        st.error(f"Error al leer expedientes: {e}")
         conn.close()
-        if not df_e.empty:
-            exp = df_e.iloc[0]
+        return
+    conn.close()
+
+    if df.empty:
+        st.warning("No hay expedientes registrados. Crea uno desde **Nuevo expediente**.")
+        return
+
+    # Selector con info útil
+    opciones = []
+    for _, row in df.iterrows():
+        prop = row.get("propietario") or "—"
+        est = row.get("estado") or "—"
+        opciones.append(f"{row['numero_radicado']}  |  {prop}  |  {est}")
+
+    sel_label = st.selectbox("Seleccionar expediente a actualizar", opciones, key="act_sel_exp")
+    radicado_sel = sel_label.split("  |  ")[0].strip() if sel_label else None
+
+    if not radicado_sel:
+        st.warning("Selecciona un expediente.")
+        return
+
+    conn = get_connection()
+    df_e = pd.read_sql_query(
+        "SELECT * FROM expedientes WHERE numero_radicado=?",
+        conn,
+        params=(radicado_sel,),
+    )
+    conn.close()
+    if df_e.empty:
+        st.error("No se encontró el expediente seleccionado.")
+        return
+
+    exp = df_e.iloc[0]
+    st.success(f"Cargado: **{radicado_sel}** — {safe_get(exp, 'propietario') or 'Sin propietario'} — Estado: {safe_get(exp, 'estado') or '—'}")
+    _formulario_expediente(es_nuevo=False, exp=exp, radicado_fijo=radicado_sel)
+
+
+def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
+    """Formulario compartido de expediente. es_nuevo=True crea; False actualiza."""
+    modo = radicado_fijo  # en actualización es el radicado fijo
+    expand_all = not es_nuevo  # en actualizar se abren las secciones
+    pfx = "n_" if es_nuevo else "a_"  # prefijo de keys para no mezclar sesión Nuevo/Actualizar
 
     # ── Sección 1: Identificación ──
     with st.expander("1. Identificación y radicación", expanded=True):
@@ -585,13 +634,13 @@ def pagina_nuevo_editar():
             num_res = st.text_input("Número de resolución", value=safe_get(exp, 'numero_resolucion', '') or '')
             fecha_res = st.date_input("Fecha resolución",
                                       value=parse_date(safe_get(exp, 'fecha_resolucion')),
-                                      key="fecha_res_id")
+                                      key=f"{pfx}fecha_res_id")
             if st.checkbox("Sin fecha resolución", value=parse_date(safe_get(exp, 'fecha_resolucion')) is None,
-                           key="sin_fecha_res"):
+                           key=f"{pfx}sin_fecha_res"):
                 fecha_res = None
 
     # ── Sección 2: Pagos ──
-    with st.expander("2. Pagos"):
+    with st.expander("2. Pagos", expanded=expand_all):
         st.caption("Registra el estado, valor y número de recibo de Hacienda de cada pago.")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -599,45 +648,45 @@ def pagina_nuevo_editar():
             pago30 = st.selectbox("Estado pago 30%", ["", "Sí", "No", "Pendiente"],
                                   index=["", "Sí", "No", "Pendiente"].index(safe_get(exp, 'pago_30_anticipo', '') or '')
                                   if (safe_get(exp, 'pago_30_anticipo') or '') in ["", "Sí", "No", "Pendiente"] else 0,
-                                  key="pago30_estado")
+                                  key=f"{pfx}pago30_estado")
             valor_pago30 = st.number_input(
                 "Valor pago 30% ($)",
                 min_value=0.0,
                 value=float(safe_get(exp, 'valor_pago_30') or 0),
                 step=100000.0,
                 format="%.0f",
-                key="valor_pago30",
+                key=f"{pfx}valor_pago30",
             )
             num_recibo30 = st.text_input(
                 "N° recibo Hacienda (30%)",
                 value=safe_get(exp, 'numero_recibo_30', '') or '',
-                key="recibo30",
+                key=f"{pfx}recibo30",
             )
         with col2:
             st.markdown("**Saldo 70%**")
             saldo70 = st.selectbox("Estado saldo 70%", ["", "Sí", "No", "Pendiente"],
                                    index=["", "Sí", "No", "Pendiente"].index(safe_get(exp, 'saldo_70', '') or '')
                                    if (safe_get(exp, 'saldo_70') or '') in ["", "Sí", "No", "Pendiente"] else 0,
-                                   key="saldo70_estado")
+                                   key=f"{pfx}saldo70_estado")
             valor_pago70 = st.number_input(
                 "Valor pago 70% ($)",
                 min_value=0.0,
                 value=float(safe_get(exp, 'valor_pago_70') or 0),
                 step=100000.0,
                 format="%.0f",
-                key="valor_pago70",
+                key=f"{pfx}valor_pago70",
             )
             num_recibo70 = st.text_input(
                 "N° recibo Hacienda (70%)",
                 value=safe_get(exp, 'numero_recibo_70', '') or '',
-                key="recibo70",
+                key=f"{pfx}recibo70",
             )
         with col3:
             st.markdown("**Confirmación**")
             conf70 = st.selectbox("Confirma pago 70%", ["", "Sí", "No"],
                                   index=["", "Sí", "No"].index(safe_get(exp, 'confirma_pago_70', '') or '')
                                   if (safe_get(exp, 'confirma_pago_70') or '') in ["", "Sí", "No"] else 0,
-                                  key="conf70")
+                                  key=f"{pfx}conf70")
             total_pagos = (valor_pago30 or 0) + (valor_pago70 or 0)
             st.metric("Total pagado registrado", f"$ {total_pagos:,.0f}")
 
@@ -671,42 +720,42 @@ def pagina_nuevo_editar():
             correo_ent = st.text_input("Correo entrega (si magnético)", value=safe_get(exp, 'correo_entrega', '') or '')
 
     # ── Sección 4: Revisiones ──
-    with st.expander("4. Revisiones (plazos hábiles)"):
+    with st.expander("4. Revisiones (plazos hábiles)", expanded=expand_all):
         st.caption("Ingresa la fecha de ingreso a revisión jurídica; las demás se calculan automáticamente (5 días jurídica, 8 arquitectura, 8 estructural). Puedes sobrescribirlas.")
         col1, col2, col3 = st.columns(3)
         with col1:
             fi_jur = st.date_input("Fecha ingreso revisión jurídica (5 días hábiles)",
                                    value=parse_date(safe_get(exp, 'fecha_ingreso_juridica')),
-                                   key="fi_jur")
-            if st.checkbox("Sin fecha ingreso jurídica", value=parse_date(safe_get(exp, 'fecha_ingreso_juridica')) is None, key="sin_fi_jur"):
+                                   key=f"{pfx}fi_jur")
+            if st.checkbox("Sin fecha ingreso jurídica", value=parse_date(safe_get(exp, 'fecha_ingreso_juridica')) is None, key=f"{pfx}sin_fi_jur"):
                 fi_jur = None
             calc = calcular_fechas_revision(fi_jur)
             fs_jur = st.date_input("Fecha salida jurídica",
                                    value=parse_date(safe_get(exp, 'fecha_salida_juridica')) or calc.get("fecha_salida_juridica"),
-                                   key="fs_jur")
-            if st.checkbox("Sin fecha salida jurídica", value=False, key="sin_fs_jur"):
+                                   key=f"{pfx}fs_jur")
+            if st.checkbox("Sin fecha salida jurídica", value=False, key=f"{pfx}sin_fs_jur"):
                 fs_jur = None
         with col2:
             fi_arq = st.date_input("Fecha ingreso arquitectura (8 días hábiles)",
                                    value=parse_date(safe_get(exp, 'fecha_ingreso_arquitectura')) or calc.get("fecha_ingreso_arquitectura"),
-                                   key="fi_arq")
-            if st.checkbox("Sin fecha ingreso arq.", value=False, key="sin_fi_arq"):
+                                   key=f"{pfx}fi_arq")
+            if st.checkbox("Sin fecha ingreso arq.", value=False, key=f"{pfx}sin_fi_arq"):
                 fi_arq = None
             fs_arq = st.date_input("Fecha salida arquitectura",
                                    value=parse_date(safe_get(exp, 'fecha_salida_arquitectura')) or calc.get("fecha_salida_arquitectura"),
-                                   key="fs_arq")
-            if st.checkbox("Sin fecha salida arq.", value=False, key="sin_fs_arq"):
+                                   key=f"{pfx}fs_arq")
+            if st.checkbox("Sin fecha salida arq.", value=False, key=f"{pfx}sin_fs_arq"):
                 fs_arq = None
         with col3:
             fi_est = st.date_input("Fecha ingreso revisión estructural",
                                    value=parse_date(safe_get(exp, 'fecha_ingreso_estructural')) or calc.get("fecha_ingreso_estructural"),
-                                   key="fi_est")
-            if st.checkbox("Sin fecha ingreso est.", value=False, key="sin_fi_est"):
+                                   key=f"{pfx}fi_est")
+            if st.checkbox("Sin fecha ingreso est.", value=False, key=f"{pfx}sin_fi_est"):
                 fi_est = None
             fs_est = st.date_input("Fecha salida revisión estructural",
                                    value=parse_date(safe_get(exp, 'fecha_salida_estructural')) or calc.get("fecha_salida_estructural"),
-                                   key="fs_est")
-            if st.checkbox("Sin fecha salida est.", value=False, key="sin_fs_est"):
+                                   key=f"{pfx}fs_est")
+            if st.checkbox("Sin fecha salida est.", value=False, key=f"{pfx}sin_fs_est"):
                 fs_est = None
 
         # Días en estudio (automático)
@@ -717,27 +766,28 @@ def pagina_nuevo_editar():
         st.metric("Número de días en estudio (automático)", dias_est)
 
     # ── Sección 5: Acta de observaciones ──
-    with st.expander("5. Acta de observaciones y prórroga"):
+    with st.expander("5. Acta de observaciones y prórroga", expanded=expand_all):
         col1, col2, col3 = st.columns(3)
         with col1:
             fecha_elab_acta = st.date_input("Fecha elaboración acta observaciones (1ª revisión)",
-                                            value=parse_date(safe_get(exp, 'fecha_elaboracion_acta')), key="fea")
-            if st.checkbox("Sin fecha elab. acta", value=parse_date(safe_get(exp, 'fecha_elaboracion_acta')) is None, key="sin_fea"):
+                                            value=parse_date(safe_get(exp, 'fecha_elaboracion_acta')), key=f"{pfx}fea")
+            if st.checkbox("Sin fecha elab. acta", value=parse_date(safe_get(exp, 'fecha_elaboracion_acta')) is None, key=f"{pfx}sin_fea"):
                 fecha_elab_acta = None
-            num_acta = st.text_input("Número de acta", value=safe_get(exp, 'numero_acta', '') or '')
-            rad_salida_acta = st.text_input("Radicado de salida acta", value=safe_get(exp, 'radicado_salida_acta', '') or '')
+            num_acta = st.text_input("Número de acta", value=safe_get(exp, 'numero_acta', '') or '', key=f"{pfx}num_acta")
+            rad_salida_acta = st.text_input("Radicado de salida acta", value=safe_get(exp, 'radicado_salida_acta', '') or '', key=f"{pfx}rad_salida_acta")
             fecha_rad_acta = st.date_input("Fecha de radicado acta",
-                                           value=parse_date(safe_get(exp, 'fecha_radicado_acta')), key="fra")
-            if st.checkbox("Sin fecha rad. acta", value=parse_date(safe_get(exp, 'fecha_radicado_acta')) is None, key="sin_fra"):
+                                           value=parse_date(safe_get(exp, 'fecha_radicado_acta')), key=f"{pfx}fra")
+            if st.checkbox("Sin fecha rad. acta", value=parse_date(safe_get(exp, 'fecha_radicado_acta')) is None, key=f"{pfx}sin_fra"):
                 fecha_rad_acta = None
         with col2:
-            rad_prorroga = st.text_input("Radicado oficio prórroga", value=safe_get(exp, 'radicado_oficio_prorroga', '') or '')
+            rad_prorroga = st.text_input("Radicado oficio prórroga", value=safe_get(exp, 'radicado_oficio_prorroga', '') or '', key=f"{pfx}rad_prorroga")
             fecha_of_prorroga = st.date_input("Fecha oficio prórroga",
-                                              value=parse_date(safe_get(exp, 'fecha_oficio_prorroga')), key="fop")
-            if st.checkbox("Sin fecha oficio prórroga", value=parse_date(safe_get(exp, 'fecha_oficio_prorroga')) is None, key="sin_fop"):
+                                              value=parse_date(safe_get(exp, 'fecha_oficio_prorroga')), key=f"{pfx}fop")
+            if st.checkbox("Sin fecha oficio prórroga", value=parse_date(safe_get(exp, 'fecha_oficio_prorroga')) is None, key=f"{pfx}sin_fop"):
                 fecha_of_prorroga = None
             tiene_prorroga = st.selectbox("¿Tiene prórroga?", ["No", "Sí"],
-                                          index=0 if safe_get(exp, 'tiene_prorroga', 'No') != 'Sí' else 1)
+                                          index=0 if safe_get(exp, 'tiene_prorroga', 'No') != 'Sí' else 1,
+                                          key=f"{pfx}tiene_prorroga")
             # Vencimiento 30 días hábiles + 15 si prórroga
             base_subs = fecha_rad_acta or fecha_elab_acta
             if base_subs:
@@ -748,20 +798,21 @@ def pagina_nuevo_editar():
             st.text_input("Fecha vencimiento subsanación (30/45 días hábiles)",
                           value=fv_sub.strftime('%Y-%m-%d') if fv_sub else '', disabled=True)
         with col3:
-            rad_corr = st.text_input("Radicado entrada corrección", value=safe_get(exp, 'radicado_entrada_correccion', '') or '')
+            rad_corr = st.text_input("Radicado entrada corrección", value=safe_get(exp, 'radicado_entrada_correccion', '') or '', key=f"{pfx}rad_corr")
             fecha_rad_corr = st.date_input("Fecha radicado corrección",
-                                           value=parse_date(safe_get(exp, 'fecha_radicado_correccion')), key="frc")
-            if st.checkbox("Sin fecha rad. corrección", value=parse_date(safe_get(exp, 'fecha_radicado_correccion')) is None, key="sin_frc"):
+                                           value=parse_date(safe_get(exp, 'fecha_radicado_correccion')), key=f"{pfx}frc")
+            if st.checkbox("Sin fecha rad. corrección", value=parse_date(safe_get(exp, 'fecha_radicado_correccion')) is None, key=f"{pfx}sin_frc"):
                 fecha_rad_corr = None
             fecha_acta_fin = st.date_input("Fecha acta finalización para resolución",
-                                           value=parse_date(safe_get(exp, 'fecha_acta_finalizacion')), key="faf")
-            if st.checkbox("Sin fecha acta finalización", value=parse_date(safe_get(exp, 'fecha_acta_finalizacion')) is None, key="sin_faf"):
+                                           value=parse_date(safe_get(exp, 'fecha_acta_finalizacion')), key=f"{pfx}faf")
+            if st.checkbox("Sin fecha acta finalización", value=parse_date(safe_get(exp, 'fecha_acta_finalizacion')) is None, key=f"{pfx}sin_faf"):
                 fecha_acta_fin = None
 
-    observaciones = st.text_area("Observaciones generales", value=safe_get(exp, 'observaciones', '') or '')
+    observaciones = st.text_area("Observaciones generales", value=safe_get(exp, 'observaciones', '') or '', key=f"{pfx}obs")
 
     # Guardar
-    if st.button("💾 Guardar avance / Actualizar expediente", type="primary", use_container_width=True):
+    btn_label = "💾 Guardar nuevo expediente" if es_nuevo else "🔄 Actualizar y guardar"
+    if st.button(btn_label, type="primary", use_container_width=True, key=f"{pfx}btn_guardar"):
         if es_nuevo and not numero.strip():
             st.error("El número de radicado es obligatorio para crear un expediente.")
             return
@@ -871,7 +922,7 @@ def pagina_expedientes():
     df = pd.read_sql_query("SELECT * FROM expedientes ORDER BY id DESC", conn)
     conn.close()
     if df.empty:
-        st.info("No hay expedientes. Crea uno desde «Nuevo / Actualizar».")
+        st.info("No hay expedientes. Crea uno desde «Nuevo expediente».")
         return
 
     col1, col2 = st.columns(2)
@@ -1679,7 +1730,8 @@ def main():
         pagina = st.radio("Menú", [
             "Dashboard",
             "Consulta",
-            "Nuevo / Actualizar Expediente",
+            "Nuevo expediente",
+            "Actualizar expediente",
             "Expedientes",
             "Aprobaciones por Área",
             "Proyección de Acto",
@@ -1701,8 +1753,10 @@ def main():
         pagina_dashboard()
     elif pagina == "Consulta":
         pagina_consulta()
-    elif pagina == "Nuevo / Actualizar Expediente":
-        pagina_nuevo_editar()
+    elif pagina == "Nuevo expediente":
+        pagina_nuevo()
+    elif pagina == "Actualizar expediente":
+        pagina_actualizar()
     elif pagina == "Expedientes":
         pagina_expedientes()
     elif pagina == "Aprobaciones por Área":
