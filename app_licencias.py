@@ -17,7 +17,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-DB_PATH = "licencias.db"
+# Ruta fija del archivo de base de datos (siempre el mismo archivo, sin duplicados)
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "licencias.db")
 
 # ─────────────────────────────────────────────
 # Utilidades de días hábiles (Colombia)
@@ -246,6 +247,16 @@ def init_db():
             c.execute(f'ALTER TABLE expedientes ADD COLUMN {col} {tipo}')
         except Exception:
             pass
+
+    # Índice UNIQUE sobre numero_radicado (protege contra duplicados
+    # aunque la tabla se haya creado antes sin la restricción)
+    try:
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_expedientes_numero_radicado "
+            "ON expedientes(numero_radicado)"
+        )
+    except Exception:
+        pass
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS requerimientos (
@@ -735,23 +746,44 @@ def pagina_nuevo_editar():
             "tipo_obra": modalidad,  # compatibilidad
         }
 
+        radicado_final = (numero.strip() if es_nuevo else modo).strip()
+        if not radicado_final:
+            st.error("El número de radicado es obligatorio.")
+            return
+
+        datos["numero_radicado"] = radicado_final
+
         conn = get_connection()
         c = conn.cursor()
         try:
-            if es_nuevo:
+            # Verificar si ya existe ese radicado
+            c.execute("SELECT id FROM expedientes WHERE numero_radicado = ?", (radicado_final,))
+            existe = c.fetchone()
+
+            if existe:
+                # ACTUALIZAR el mismo registro (nunca duplicar)
+                sets = ", ".join([f"{k}=?" for k in datos.keys() if k != "numero_radicado"])
+                vals = [datos[k] for k in datos.keys() if k != "numero_radicado"] + [radicado_final]
+                c.execute(f"UPDATE expedientes SET {sets} WHERE numero_radicado=?", vals)
+                conn.commit()
+                st.success(f"Expediente **{radicado_final}** actualizado correctamente (mismo registro, sin duplicar).")
+            else:
+                # INSERTAR solo si no existe
                 cols = list(datos.keys())
                 placeholders = ",".join(["?"] * len(cols))
-                c.execute(f"INSERT INTO expedientes ({','.join(cols)}) VALUES ({placeholders})",
-                          [datos[k] for k in cols])
-                st.success(f"Expediente **{numero}** creado correctamente.")
-            else:
-                sets = ", ".join([f"{k}=?" for k in datos.keys() if k != "numero_radicado"])
-                vals = [datos[k] for k in datos.keys() if k != "numero_radicado"] + [modo]
-                c.execute(f"UPDATE expedientes SET {sets} WHERE numero_radicado=?", vals)
-                st.success(f"Expediente **{modo}** actualizado.")
-            conn.commit()
+                c.execute(
+                    f"INSERT INTO expedientes ({','.join(cols)}) VALUES ({placeholders})",
+                    [datos[k] for k in cols],
+                )
+                conn.commit()
+                st.success(f"Expediente **{radicado_final}** creado correctamente.")
         except sqlite3.IntegrityError:
-            st.error("Ya existe un expediente con ese número de radicado.")
+            # Seguridad extra por si hay condición de carrera
+            st.error(f"Ya existe un expediente con el radicado **{radicado_final}**. No se duplicó el registro.")
+            conn.rollback()
+        except Exception as e:
+            st.error(f"Error al guardar: {e}")
+            conn.rollback()
         finally:
             conn.close()
         st.rerun()
@@ -1213,6 +1245,328 @@ def pagina_notificacion():
         st.rerun()
 
 # ─────────────────────────────────────────────
+# Reportes
+# ─────────────────────────────────────────────
+# Diccionario de variables disponibles para reportes (nombre legible → columna BD)
+VARIABLES_REPORTE = {
+    "N° Radicado": "numero_radicado",
+    "Fecha radicación": "fecha_radicacion",
+    "Modalidad": "modalidad",
+    "Estado": "estado",
+    "Fecha vencimiento 45 días": "fecha_vencimiento_45",
+    "Alerta": "alerta",
+    "N° Resolución": "numero_resolucion",
+    "Fecha resolución": "fecha_resolucion",
+    "Propietario": "propietario",
+    "Cédula / NIT": "cedula_titular",
+    "Apoderado": "apoderado",
+    "Celular": "celular",
+    "Persona autoriza": "persona_autoriza",
+    "Ficha catastral": "ficha_catastral",
+    "Matrícula inmobiliaria": "matricula_inmobiliaria",
+    "Dirección": "direccion",
+    "Barrio": "barrio",
+    "Zona": "zona",
+    "Superficie (m²)": "superficie",
+    "Valor obra": "valor_obra",
+    "Pago 30% anticipo": "pago_30_anticipo",
+    "Saldo 70%": "saldo_70",
+    "Confirma pago 70%": "confirma_pago_70",
+    "Fecha ingreso jurídica": "fecha_ingreso_juridica",
+    "Fecha salida jurídica": "fecha_salida_juridica",
+    "Fecha ingreso arquitectura": "fecha_ingreso_arquitectura",
+    "Fecha salida arquitectura": "fecha_salida_arquitectura",
+    "Fecha ingreso estructural": "fecha_ingreso_estructural",
+    "Fecha salida estructural": "fecha_salida_estructural",
+    "Días en estudio": "dias_en_estudio",
+    "Fecha elaboración acta": "fecha_elaboracion_acta",
+    "N° Acta": "numero_acta",
+    "Radicado salida acta": "radicado_salida_acta",
+    "Fecha radicado acta": "fecha_radicado_acta",
+    "Tiene prórroga": "tiene_prorroga",
+    "Fecha vencimiento subsanación": "fecha_vencimiento_subsanacion",
+    "Radicado entrada corrección": "radicado_entrada_correccion",
+    "Fecha radicado corrección": "fecha_radicado_correccion",
+    "Fecha acta finalización": "fecha_acta_finalizacion",
+    "Aprobación jurídica": "aprobacion_juridica",
+    "Aprobación arquitectura": "aprobacion_arquitectura",
+    "Aprobación ingeniería": "aprobacion_ingenieria",
+    "Área predio": "area_predio",
+    "Área libre": "area_libre",
+    "N° pisos": "numero_pisos",
+    "N° vivienda": "numero_vivienda",
+    "Área primer piso": "area_primer_piso",
+    "Área segundo piso": "area_segundo_piso",
+    "Área existente": "area_existente",
+    "Área ampliación": "area_ampliacion",
+    "Área total construida": "area_total_construida",
+    "Índice ocupación": "indice_ocupacion",
+    "Índice construcción": "indice_construccion",
+    "Sector": "sector",
+    "Ubicación predio": "ubicacion_predio",
+    "Prof. arquitectónico": "profesional_arquitectonico",
+    "Prof. estructural": "profesional_estructural",
+    "Cant. planos arq.": "cantidad_planos_arq",
+    "Cant. planos est.": "cantidad_planos_est",
+    "Firma jurídico": "firma_juridico",
+    "Firma arquitecto": "firma_arquitecto",
+    "Firma ingeniero": "firma_ingeniero",
+    "Firma jefe planeación": "firma_jefe_planeacion",
+    "Planos sellados": "planos_sellados",
+    "Fecha notificación personal": "fecha_notificacion_personal",
+    "Tiene ejecutoria": "tiene_ejecutoria",
+    "Fecha ejecutoria": "fecha_ejecutoria",
+    "Fecha entrega final": "fecha_entrega_final",
+    "Persona recibe": "persona_recibe",
+    "Observaciones": "observaciones",
+    "Última actualización": "ultima_actualizacion",
+}
+
+PRESETS_REPORTE = {
+    "Básico (radicado, fechas, estado, propietario)": [
+        "N° Radicado", "Fecha radicación", "Modalidad", "Estado",
+        "Propietario", "Fecha vencimiento 45 días", "Alerta", "N° Resolución"
+    ],
+    "Plazos y alertas": [
+        "N° Radicado", "Propietario", "Estado", "Fecha radicación",
+        "Fecha vencimiento 45 días", "Alerta", "Días en estudio",
+        "Fecha ingreso jurídica", "Fecha salida jurídica",
+        "Fecha ingreso arquitectura", "Fecha salida arquitectura",
+        "Fecha ingreso estructural", "Fecha salida estructural",
+        "Fecha vencimiento subsanación"
+    ],
+    "Aprobaciones y firmas": [
+        "N° Radicado", "Propietario", "Estado", "Modalidad",
+        "Aprobación jurídica", "Aprobación arquitectura", "Aprobación ingeniería",
+        "Firma jurídico", "Firma arquitecto", "Firma ingeniero", "Firma jefe planeación",
+        "Planos sellados", "N° Resolución", "Fecha resolución"
+    ],
+    "Datos del predio y acto": [
+        "N° Radicado", "Propietario", "Modalidad", "Dirección", "Barrio", "Zona",
+        "Ficha catastral", "Matrícula inmobiliaria", "Superficie (m²)", "Valor obra",
+        "Área predio", "Área libre", "N° pisos", "N° vivienda",
+        "Área total construida", "Índice ocupación", "Índice construcción",
+        "Sector", "Ubicación predio", "Prof. arquitectónico", "Prof. estructural"
+    ],
+    "Notificación y entrega": [
+        "N° Radicado", "Propietario", "Estado", "N° Resolución", "Fecha resolución",
+        "Fecha notificación personal", "Tiene ejecutoria", "Fecha ejecutoria",
+        "Fecha entrega final", "Persona recibe"
+    ],
+    "Completo (todas las variables)": list(VARIABLES_REPORTE.keys()),
+}
+
+def pagina_reportes():
+    st.title("📑 Reportes")
+    st.caption("Genera reportes personalizados eligiendo filtros y variables. Descarga en CSV o Excel.")
+
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query("SELECT * FROM expedientes ORDER BY id DESC", conn)
+    except Exception as e:
+        st.error(f"No se pudo leer la base de datos: {e}")
+        conn.close()
+        return
+    conn.close()
+
+    if df.empty:
+        st.warning("No hay expedientes registrados todavía.")
+        return
+
+    # ── Filtros ──
+    with st.expander("🔍 Filtros", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            estados_disp = ["Todos"] + sorted([x for x in df["estado"].dropna().unique().tolist() if x])
+            filtro_estado = st.multiselect("Estado", estados_disp, default=["Todos"])
+            modalidades_disp = ["Todas"] + sorted([x for x in df["modalidad"].dropna().unique().tolist() if x])
+            filtro_mod = st.multiselect("Modalidad", modalidades_disp, default=["Todas"])
+        with col2:
+            fecha_desde = st.date_input("Fecha radicación desde", value=None, key="rep_desde")
+            fecha_hasta = st.date_input("Fecha radicación hasta", value=None, key="rep_hasta")
+            solo_alertas = st.checkbox("Solo con alerta de vencimiento (≤ 5 días o vencidos)", value=False)
+        with col3:
+            texto_busqueda = st.text_input("Buscar texto (radicado, propietario, cédula, ficha…)")
+            zona_disp = ["Todas"] + sorted([x for x in df.get("zona", pd.Series(dtype=str)).dropna().unique().tolist() if x])
+            filtro_zona = st.selectbox("Zona", zona_disp)
+
+    # Aplicar filtros
+    df_f = df.copy()
+    if filtro_estado and "Todos" not in filtro_estado:
+        df_f = df_f[df_f["estado"].isin(filtro_estado)]
+    if filtro_mod and "Todas" not in filtro_mod:
+        df_f = df_f[df_f["modalidad"].isin(filtro_mod)]
+    if fecha_desde:
+        df_f = df_f[df_f["fecha_radicacion"].apply(lambda x: parse_date(x) is not None and parse_date(x) >= fecha_desde)]
+    if fecha_hasta:
+        df_f = df_f[df_f["fecha_radicacion"].apply(lambda x: parse_date(x) is not None and parse_date(x) <= fecha_hasta)]
+    if filtro_zona != "Todas":
+        df_f = df_f[df_f.get("zona", pd.Series(dtype=str)) == filtro_zona]
+    if texto_busqueda:
+        mask = (
+            df_f["numero_radicado"].astype(str).str.contains(texto_busqueda, case=False, na=False) |
+            df_f["propietario"].astype(str).str.contains(texto_busqueda, case=False, na=False) |
+            df_f.get("cedula_titular", pd.Series([""] * len(df_f))).astype(str).str.contains(texto_busqueda, case=False, na=False) |
+            df_f.get("ficha_catastral", pd.Series([""] * len(df_f))).astype(str).str.contains(texto_busqueda, case=False, na=False) |
+            df_f.get("direccion", pd.Series([""] * len(df_f))).astype(str).str.contains(texto_busqueda, case=False, na=False)
+        )
+        df_f = df_f[mask]
+    if solo_alertas:
+        hoy = date.today()
+        def tiene_alerta(row):
+            fv = parse_date(row.get("fecha_vencimiento_45"))
+            estado = str(row.get("estado") or "")
+            if not fv or estado in ("Ejecutoriado", "Archivado", "Negado", "Entrega final"):
+                return False
+            return fv <= hoy + timedelta(days=5)
+        df_f = df_f[df_f.apply(tiene_alerta, axis=1)]
+
+    # ── Selección de variables ──
+    st.subheader("Variables del reporte")
+    preset = st.selectbox("Plantilla rápida", list(PRESETS_REPORTE.keys()), index=0)
+    vars_default = PRESETS_REPORTE[preset]
+
+    # Multiselect con nombres legibles
+    vars_seleccionadas = st.multiselect(
+        "Selecciona las columnas a incluir",
+        options=list(VARIABLES_REPORTE.keys()),
+        default=[v for v in vars_default if v in VARIABLES_REPORTE],
+        help="Puedes combinar la plantilla con columnas adicionales."
+    )
+
+    if not vars_seleccionadas:
+        st.warning("Selecciona al menos una variable.")
+        return
+
+    # Construir DataFrame del reporte
+    cols_bd = [VARIABLES_REPORTE[v] for v in vars_seleccionadas]
+    # Solo columnas que existan en el df
+    cols_existentes = [c for c in cols_bd if c in df_f.columns]
+    nombres_existentes = [v for v, c in zip(vars_seleccionadas, cols_bd) if c in df_f.columns]
+
+    if not cols_existentes:
+        st.error("Ninguna de las columnas seleccionadas existe en los datos.")
+        return
+
+    df_rep = df_f[cols_existentes].copy()
+    df_rep.columns = nombres_existentes  # nombres legibles
+
+    # Resumen
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.metric("Expedientes en el reporte", len(df_rep))
+    with col_m2:
+        st.metric("Columnas seleccionadas", len(df_rep.columns))
+    with col_m3:
+        if "Estado" in df_rep.columns:
+            st.metric("Estados distintos", df_rep["Estado"].nunique())
+
+    st.dataframe(df_rep, use_container_width=True, hide_index=True)
+
+    # ── Descargas ──
+    st.subheader("Descargar reporte")
+    col_d1, col_d2 = st.columns(2)
+
+    # CSV
+    csv_data = df_rep.to_csv(index=False).encode("utf-8-sig")
+    with col_d1:
+        st.download_button(
+            label="⬇️ Descargar CSV",
+            data=csv_data,
+            file_name=f"reporte_licencias_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    # Excel
+    try:
+        from io import BytesIO
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df_rep.to_excel(writer, index=False, sheet_name="Reporte")
+        buffer.seek(0)
+        with col_d2:
+            st.download_button(
+                label="⬇️ Descargar Excel",
+                data=buffer,
+                file_name=f"reporte_licencias_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+    except Exception:
+        with col_d2:
+            st.info("Para Excel instala `openpyxl` (pip install openpyxl). Mientras tanto usa CSV.")
+
+    # Resumen por estado / modalidad (si están en el reporte o en los datos filtrados)
+    st.divider()
+    st.subheader("Resúmenes rápidos")
+    c1, c2 = st.columns(2)
+    with c1:
+        if "estado" in df_f.columns:
+            resumen_est = df_f["estado"].value_counts().reset_index()
+            resumen_est.columns = ["Estado", "Cantidad"]
+            st.write("**Por estado**")
+            st.dataframe(resumen_est, use_container_width=True, hide_index=True)
+    with c2:
+        if "modalidad" in df_f.columns:
+            resumen_mod = df_f["modalidad"].value_counts().reset_index()
+            resumen_mod.columns = ["Modalidad", "Cantidad"]
+            st.write("**Por modalidad**")
+            st.dataframe(resumen_mod, use_container_width=True, hide_index=True)
+
+    # ── Respaldo de base de datos y exportación completa ──
+    st.divider()
+    st.subheader("💾 Respaldo y base de datos")
+    st.caption("Descarga la base de datos completa o un Excel con todos los expedientes (todas las columnas).")
+
+    col_b1, col_b2, col_b3 = st.columns(3)
+
+    # Descargar archivo .db
+    with col_b1:
+        if os.path.exists(DB_PATH):
+            with open(DB_PATH, "rb") as f:
+                db_bytes = f.read()
+            st.download_button(
+                label="⬇️ Descargar base de datos (.db)",
+                data=db_bytes,
+                file_name=f"licencias_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
+                mime="application/x-sqlite3",
+                use_container_width=True,
+                help="Archivo SQLite completo. Puedes restaurarlo reemplazando licencias.db.",
+            )
+        else:
+            st.warning("Aún no existe el archivo de base de datos.")
+
+    # Excel completo (todas las columnas de expedientes filtrados)
+    with col_b2:
+        try:
+            from io import BytesIO
+            buf_full = BytesIO()
+            with pd.ExcelWriter(buf_full, engine="openpyxl") as writer:
+                df_f.to_excel(writer, index=False, sheet_name="Expedientes")
+            buf_full.seek(0)
+            st.download_button(
+                label="⬇️ Excel completo (filtrado)",
+                data=buf_full,
+                file_name=f"expedientes_completo_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except Exception:
+            st.caption("Instala openpyxl para Excel completo.")
+
+    # CSV completo
+    with col_b3:
+        csv_full = df_f.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            label="⬇️ CSV completo (filtrado)",
+            data=csv_full,
+            file_name=f"expedientes_completo_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+# ─────────────────────────────────────────────
 # Información
 # ─────────────────────────────────────────────
 def pagina_info():
@@ -1227,6 +1581,7 @@ def pagina_info():
 5. **Proyección de acto administrativo** — Datos del predio, índices, profesionales, descripción (paz y salvo, certificado de libertad, etc.). Precarga datos del expediente.
 6. **Control de firmas** — Trazabilidad de quién firmó. Configuración de quién debe firmar según modalidad (obra vs re-subdivisión). Siempre firma el Jefe de Planeación. Control de planos sellados.
 7. **Notificación** — Oficio de solicitud de presentación → notificación personal + oficio de valla → soportes (emisora, foto valla, link web) → ejecutoria → entrega final.
+8. **Reportes e informes** — Filtros + selección de variables + plantillas. Exportación a CSV/Excel. Descarga de la base de datos (.db) y respaldo completo.
 
 ### Usuarios de prueba
 | Usuario | Clave | Rol |
@@ -1264,6 +1619,7 @@ def main():
             "Proyección de Acto",
             "Control de Firmas",
             "Notificación y Entrega",
+            "Reportes",
             "Información"
         ])
         st.divider()
@@ -1287,6 +1643,8 @@ def main():
         pagina_firmas()
     elif pagina == "Notificación y Entrega":
         pagina_notificacion()
+    elif pagina == "Reportes":
+        pagina_reportes()
     elif pagina == "Información":
         pagina_info()
 
