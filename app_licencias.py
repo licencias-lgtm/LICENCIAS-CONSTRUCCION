@@ -134,6 +134,7 @@ COLUMNAS_EXPEDIENTES = [
     ("valor_pago_70", "REAL"),
     ("numero_recibo_70", "TEXT"),
     ("confirma_pago_70", "TEXT"),
+    ("observaciones_pago", "TEXT"),  # vigencias anteriores, ajustes, casos atípicos
     # Personas
     ("persona_autoriza", "TEXT"),
     ("propietario", "TEXT"),
@@ -402,13 +403,14 @@ def date_input_optional(label, value=None, key=None):
     return d
 
 MODALIDADES = [
-    "Nueva Construcción", "Ampliación", "Remodelación", "Demolición",
+    "Obra Nueva", "Ampliación", "Remodelación", "Demolición",
     "Regularización", "Cambio de Uso", "Obra Menor", "Re-subdivisión",
     "Urbanización", "Parcelación", "Otro"
 ]
 
 ESTADOS = [
     "Radicado", "En revisión", "En Acta de Observaciones", "Subsanación",
+    "Aprobado",
     "Acto proyectado", "En firmas", "Resolución firmada",
     "Oficio de notificación", "Notificado", "En publicación",
     "Ejecutoriado", "Archivado", "Negado", "Inadmitido"
@@ -651,9 +653,14 @@ def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
                                    disabled=not es_nuevo)
             fecha_rad = st.date_input("Fecha de radicación",
                                       value=parse_date(safe_get(exp, 'fecha_radicacion')) or date.today())
-            modalidad = st.selectbox("Modalidad", MODALIDADES,
-                                     index=MODALIDADES.index(safe_get(exp, 'modalidad', MODALIDADES[0]))
-                                     if safe_get(exp, 'modalidad') in MODALIDADES else 0)
+            _mod = safe_get(exp, 'modalidad', MODALIDADES[0]) or MODALIDADES[0]
+            if _mod == "Nueva Construcción":
+                _mod = "Obra Nueva"  # nombre anterior unificado
+            modalidad = st.selectbox(
+                "Modalidad",
+                MODALIDADES,
+                index=MODALIDADES.index(_mod) if _mod in MODALIDADES else 0,
+            )
         with col2:
             # Estado primero (define si hay alertas y conteo de días)
             _est = safe_get(exp, 'estado', 'Radicado') or 'Radicado'
@@ -751,6 +758,14 @@ def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
                                   key=f"{pfx}conf70")
             total_pagos = (valor_pago30 or 0) + (valor_pago70 or 0)
             st.metric("Total pagado registrado", f"$ {total_pagos:,.0f}")
+        obs_pago = st.text_area(
+            "Observaciones de pago (casos atípicos)",
+            value=safe_get(exp, "observaciones_pago", "") or "",
+            key=f"{pfx}obs_pago",
+            height=100,
+            help="Use este campo para vigencias anteriores, pagos ajustados, liquidaciones especiales u otras situaciones atípicas.",
+            placeholder="Ej.: pago 30% con vigencia 2023; ajuste de liquidación; pago consolidado en un solo recibo; etc.",
+        )
 
     # ── Sección 3: Personas y predio ──
     with st.expander("3. Personas y predio", expanded=True):
@@ -905,6 +920,7 @@ def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
             "valor_pago_70": valor_pago70 if valor_pago70 else None,
             "numero_recibo_70": num_recibo70 or None,
             "confirma_pago_70": conf70 or None,
+            "observaciones_pago": obs_pago.strip() if obs_pago and obs_pago.strip() else None,
             "persona_autoriza": persona_aut or None,
             "propietario": propietario or None,
             "cedula_titular": cedula or None,
@@ -1071,6 +1087,9 @@ def _mostrar_info_expediente_solo_lectura(exp):
             f"Recibo: {safe_get(exp, 'numero_recibo_70') or '—'}"
         )
         st.write(f"Confirma 70%: {safe_get(exp, 'confirma_pago_70') or '—'}")
+        _op = safe_get(exp, "observaciones_pago")
+        if _op:
+            st.write(f"**Observaciones de pago:** {_op}")
 
     with st.expander("Revisiones y plazos", expanded=False):
         st.write(f"Ingreso jurídica: {safe_get(exp, 'fecha_ingreso_juridica') or '—'} → Salida: {safe_get(exp, 'fecha_salida_juridica') or '—'}")
@@ -1615,7 +1634,8 @@ COLS_BASE = [
 
 COLS_PAGOS = COLS_BASE + [
     "pago_30_anticipo", "valor_pago_30", "numero_recibo_30",
-    "saldo_70", "valor_pago_70", "numero_recibo_70", "confirma_pago_70", "valor_obra",
+    "saldo_70", "valor_pago_70", "numero_recibo_70", "confirma_pago_70",
+    "observaciones_pago", "valor_obra",
 ]
 
 COLS_VENC = COLS_BASE + ["dias_en_estudio", "fecha_ingreso_juridica", "fecha_vencimiento_subsanacion"]
