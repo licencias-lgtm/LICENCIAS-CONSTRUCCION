@@ -94,6 +94,26 @@ def safe_get(exp, key, default=None):
 def get_connection():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+def boton_descarga_bd(key_suffix=""):
+    """Botón reutilizable para descargar la base de datos SQLite."""
+    if not os.path.exists(DB_PATH):
+        st.caption("Sin base de datos aún.")
+        return
+    try:
+        with open(DB_PATH, "rb") as f:
+            db_bytes = f.read()
+        st.download_button(
+            label="⬇️ Descargar respaldo (.db)",
+            data=db_bytes,
+            file_name=f"licencias_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
+            mime="application/x-sqlite3",
+            use_container_width=True,
+            key=f"dl_db_{key_suffix}",
+            help="Guarda este archivo en tu PC. Así no pierdes la información al actualizar o redesplegar la app.",
+        )
+    except Exception as e:
+        st.caption(f"No se pudo leer la BD: {e}")
+
 COLUMNAS_EXPEDIENTES = [
     # Identificación y radicación
     # NOTA: SQLite no permite UNIQUE en ALTER TABLE ADD COLUMN.
@@ -108,7 +128,11 @@ COLUMNAS_EXPEDIENTES = [
     ("fecha_resolucion", "TEXT"),
     # Pagos
     ("pago_30_anticipo", "TEXT"),
+    ("valor_pago_30", "REAL"),
+    ("numero_recibo_30", "TEXT"),
     ("saldo_70", "TEXT"),
+    ("valor_pago_70", "REAL"),
+    ("numero_recibo_70", "TEXT"),
     ("confirma_pago_70", "TEXT"),
     # Personas
     ("persona_autoriza", "TEXT"),
@@ -495,6 +519,16 @@ def pagina_nuevo_editar():
     st.title("➕ Nuevo / Actualizar Expediente")
     st.info("Puedes guardar avances sin completar todos los campos. Solo el número de radicado es obligatorio para crear.")
 
+    # Mensaje post-guardado + oferta de respaldo
+    if st.session_state.get("msg_guardado"):
+        st.success(st.session_state.pop("msg_guardado"))
+    if st.session_state.get("ofrecer_backup"):
+        st.warning("**Recomendado:** descarga un respaldo de la base de datos para no perder información al actualizar o redesplegar la app.")
+        boton_descarga_bd(key_suffix="post_save")
+        if st.button("Continuar sin descargar ahora", key="skip_backup"):
+            st.session_state["ofrecer_backup"] = False
+            st.rerun()
+
     conn = get_connection()
     df = pd.read_sql_query("SELECT numero_radicado FROM expedientes ORDER BY id DESC", conn)
     conn.close()
@@ -558,19 +592,54 @@ def pagina_nuevo_editar():
 
     # ── Sección 2: Pagos ──
     with st.expander("2. Pagos"):
+        st.caption("Registra el estado, valor y número de recibo de Hacienda de cada pago.")
         col1, col2, col3 = st.columns(3)
         with col1:
-            pago30 = st.selectbox("Pago del 30% anticipo", ["", "Sí", "No", "Pendiente"],
+            st.markdown("**Anticipo 30%**")
+            pago30 = st.selectbox("Estado pago 30%", ["", "Sí", "No", "Pendiente"],
                                   index=["", "Sí", "No", "Pendiente"].index(safe_get(exp, 'pago_30_anticipo', '') or '')
-                                  if (safe_get(exp, 'pago_30_anticipo') or '') in ["", "Sí", "No", "Pendiente"] else 0)
+                                  if (safe_get(exp, 'pago_30_anticipo') or '') in ["", "Sí", "No", "Pendiente"] else 0,
+                                  key="pago30_estado")
+            valor_pago30 = st.number_input(
+                "Valor pago 30% ($)",
+                min_value=0.0,
+                value=float(safe_get(exp, 'valor_pago_30') or 0),
+                step=100000.0,
+                format="%.0f",
+                key="valor_pago30",
+            )
+            num_recibo30 = st.text_input(
+                "N° recibo Hacienda (30%)",
+                value=safe_get(exp, 'numero_recibo_30', '') or '',
+                key="recibo30",
+            )
         with col2:
-            saldo70 = st.selectbox("Saldo del 70%", ["", "Sí", "No", "Pendiente"],
+            st.markdown("**Saldo 70%**")
+            saldo70 = st.selectbox("Estado saldo 70%", ["", "Sí", "No", "Pendiente"],
                                    index=["", "Sí", "No", "Pendiente"].index(safe_get(exp, 'saldo_70', '') or '')
-                                   if (safe_get(exp, 'saldo_70') or '') in ["", "Sí", "No", "Pendiente"] else 0)
+                                   if (safe_get(exp, 'saldo_70') or '') in ["", "Sí", "No", "Pendiente"] else 0,
+                                   key="saldo70_estado")
+            valor_pago70 = st.number_input(
+                "Valor pago 70% ($)",
+                min_value=0.0,
+                value=float(safe_get(exp, 'valor_pago_70') or 0),
+                step=100000.0,
+                format="%.0f",
+                key="valor_pago70",
+            )
+            num_recibo70 = st.text_input(
+                "N° recibo Hacienda (70%)",
+                value=safe_get(exp, 'numero_recibo_70', '') or '',
+                key="recibo70",
+            )
         with col3:
+            st.markdown("**Confirmación**")
             conf70 = st.selectbox("Confirma pago 70%", ["", "Sí", "No"],
                                   index=["", "Sí", "No"].index(safe_get(exp, 'confirma_pago_70', '') or '')
-                                  if (safe_get(exp, 'confirma_pago_70') or '') in ["", "Sí", "No"] else 0)
+                                  if (safe_get(exp, 'confirma_pago_70') or '') in ["", "Sí", "No"] else 0,
+                                  key="conf70")
+            total_pagos = (valor_pago30 or 0) + (valor_pago70 or 0)
+            st.metric("Total pagado registrado", f"$ {total_pagos:,.0f}")
 
     # ── Sección 3: Personas y predio ──
     with st.expander("3. Personas y predio", expanded=True):
@@ -707,7 +776,11 @@ def pagina_nuevo_editar():
             "numero_resolucion": num_res or None,
             "fecha_resolucion": fmt_date(fecha_res),
             "pago_30_anticipo": pago30 or None,
+            "valor_pago_30": valor_pago30 if valor_pago30 else None,
+            "numero_recibo_30": num_recibo30 or None,
             "saldo_70": saldo70 or None,
+            "valor_pago_70": valor_pago70 if valor_pago70 else None,
+            "numero_recibo_70": num_recibo70 or None,
             "confirma_pago_70": conf70 or None,
             "persona_autoriza": persona_aut or None,
             "propietario": propietario or None,
@@ -766,7 +839,7 @@ def pagina_nuevo_editar():
                 vals = [datos[k] for k in datos.keys() if k != "numero_radicado"] + [radicado_final]
                 c.execute(f"UPDATE expedientes SET {sets} WHERE numero_radicado=?", vals)
                 conn.commit()
-                st.success(f"Expediente **{radicado_final}** actualizado correctamente (mismo registro, sin duplicar).")
+                st.session_state["msg_guardado"] = f"Expediente **{radicado_final}** actualizado correctamente (mismo registro, sin duplicar)."
             else:
                 # INSERTAR solo si no existe
                 cols = list(datos.keys())
@@ -776,7 +849,8 @@ def pagina_nuevo_editar():
                     [datos[k] for k in cols],
                 )
                 conn.commit()
-                st.success(f"Expediente **{radicado_final}** creado correctamente.")
+                st.session_state["msg_guardado"] = f"Expediente **{radicado_final}** creado correctamente."
+            st.session_state["ofrecer_backup"] = True
         except sqlite3.IntegrityError:
             # Seguridad extra por si hay condición de carrera
             st.error(f"Ya existe un expediente con el radicado **{radicado_final}**. No se duplicó el registro.")
@@ -1270,7 +1344,11 @@ VARIABLES_REPORTE = {
     "Superficie (m²)": "superficie",
     "Valor obra": "valor_obra",
     "Pago 30% anticipo": "pago_30_anticipo",
+    "Valor pago 30%": "valor_pago_30",
+    "N° recibo Hacienda 30%": "numero_recibo_30",
     "Saldo 70%": "saldo_70",
+    "Valor pago 70%": "valor_pago_70",
+    "N° recibo Hacienda 70%": "numero_recibo_70",
     "Confirma pago 70%": "confirma_pago_70",
     "Fecha ingreso jurídica": "fecha_ingreso_juridica",
     "Fecha salida jurídica": "fecha_salida_juridica",
@@ -1523,19 +1601,7 @@ def pagina_reportes():
 
     # Descargar archivo .db
     with col_b1:
-        if os.path.exists(DB_PATH):
-            with open(DB_PATH, "rb") as f:
-                db_bytes = f.read()
-            st.download_button(
-                label="⬇️ Descargar base de datos (.db)",
-                data=db_bytes,
-                file_name=f"licencias_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
-                mime="application/x-sqlite3",
-                use_container_width=True,
-                help="Archivo SQLite completo. Puedes restaurarlo reemplazando licencias.db.",
-            )
-        else:
-            st.warning("Aún no existe el archivo de base de datos.")
+        boton_descarga_bd(key_suffix="reportes")
 
     # Excel completo (todas las columnas de expedientes filtrados)
     with col_b2:
@@ -1622,6 +1688,10 @@ def main():
             "Reportes",
             "Información"
         ])
+        st.divider()
+        st.markdown("**Respaldo de datos**")
+        st.caption("Descarga la BD después de guardar cambios importantes.")
+        boton_descarga_bd(key_suffix="sidebar")
         st.divider()
         if st.button("Cerrar sesión"):
             st.session_state['logged_in'] = False
