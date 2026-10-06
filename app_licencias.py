@@ -229,6 +229,11 @@ COLUMNAS_EXPEDIENTES = [
     ("fecha_entrega_final", "TEXT"),
     ("persona_recibe", "TEXT"),
     ("entrega_cumplida", "TEXT"),  # Sí / No — chuleo de cumplimiento
+    # Archivo físico (después de ejecutoria)
+    ("archivo_tomos", "INTEGER"),
+    ("archivo_folios", "INTEGER"),
+    ("archivo_numero_caja", "TEXT"),
+    ("archivo_ubicacion", "TEXT"),  # Archivo de gestión / Mesa nene / Archivo general
     # Meta
     ("revisor_actual", "TEXT"),
     ("observaciones", "TEXT"),
@@ -1411,7 +1416,7 @@ def pagina_firmas():
 # Notificación, publicación y entrega
 # ─────────────────────────────────────────────
 def pagina_notificacion():
-    st.title("📬 Notificación, Publicación y Entrega Final")
+    st.title("📬 Notificación, Publicación, Entrega y Archivo Físico")
     conn = get_connection()
     df = pd.read_sql_query("SELECT * FROM expedientes ORDER BY id DESC", conn)
     conn.close()
@@ -1505,7 +1510,49 @@ def pagina_notificacion():
         with col3:
             persona_rec = st.text_input("Persona que recibe", value=safe_get(exp, 'persona_recibe', '') or '')
 
-    if st.button("💾 Guardar notificación / publicación / entrega", type="primary"):
+    # 6. Archivo físico (después de ejecutoria)
+    UBICACIONES_ARCHIVO = ["", "Archivo de gestión", "Mesa nene", "Archivo general"]
+    with st.expander("6. Archivo físico", expanded=True):
+        st.caption(
+            "Control de archivo físico del expediente **después de la ejecutoria**: "
+            "cantidad de tomos, folios, número de caja y ubicación donde se archiva."
+        )
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            arch_tomos = st.number_input(
+                "Cantidad de tomos",
+                min_value=0,
+                value=int(safe_get(exp, "archivo_tomos") or 0),
+                step=1,
+                key="arch_tomos",
+            )
+        with col2:
+            arch_folios = st.number_input(
+                "Cantidad de folios",
+                min_value=0,
+                value=int(safe_get(exp, "archivo_folios") or 0),
+                step=1,
+                key="arch_folios",
+            )
+        with col3:
+            arch_caja = st.text_input(
+                "Número de caja",
+                value=safe_get(exp, "archivo_numero_caja", "") or "",
+                key="arch_caja",
+            )
+        with col4:
+            _ubi = safe_get(exp, "archivo_ubicacion", "") or ""
+            if _ubi not in UBICACIONES_ARCHIVO:
+                _ubi = ""
+            arch_ubicacion = st.selectbox(
+                "Ubicación de la caja",
+                UBICACIONES_ARCHIVO,
+                index=UBICACIONES_ARCHIVO.index(_ubi),
+                key="arch_ubicacion",
+                help="Archivo de gestión · Mesa nene · Archivo general",
+            )
+
+    if st.button("💾 Guardar notificación / publicación / entrega / archivo", type="primary"):
         # Estado del flujo (sin usar «Entrega final»)
         nuevo_estado = safe_get(exp, 'estado')
         if tiene_ej == "Sí" or fecha_ej:
@@ -1517,6 +1564,9 @@ def pagina_notificacion():
         # Si el estado anterior era el viejo "Entrega final", normalizar
         if nuevo_estado == "Entrega final":
             nuevo_estado = "Ejecutoriado"
+        # Si se registró archivo físico con ubicación, marcar como Archivado
+        if arch_ubicacion and (arch_tomos or arch_folios or arch_caja):
+            nuevo_estado = "Archivado"
 
         conn = get_connection()
         c = conn.cursor()
@@ -1530,6 +1580,7 @@ def pagina_notificacion():
                 soporte_publicacion_emisora=?, foto_valla=?, link_publicacion=?,
                 tiene_ejecutoria=?, fecha_ejecutoria=?,
                 fecha_entrega_final=?, persona_recibe=?, entrega_cumplida=?,
+                archivo_tomos=?, archivo_folios=?, archivo_numero_caja=?, archivo_ubicacion=?,
                 estado=?, alerta=?, ultima_actualizacion=?
             WHERE numero_radicado=?
         ''', (
@@ -1539,6 +1590,10 @@ def pagina_notificacion():
             tiene_ej or None, fmt_date(fecha_ej),
             fmt_date(fecha_ent), persona_rec or None,
             "Sí" if entrega_ok else "No",
+            arch_tomos if arch_tomos else None,
+            arch_folios if arch_folios else None,
+            arch_caja or None,
+            arch_ubicacion or None,
             nuevo_estado,
             alerta_upd,
             datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -1546,7 +1601,7 @@ def pagina_notificacion():
         ))
         conn.commit()
         conn.close()
-        st.success("Datos de notificación, publicación y entrega guardados.")
+        st.success("Datos de notificación, publicación, entrega y archivo físico guardados.")
         st.rerun()
 
 # ─────────────────────────────────────────────
@@ -1847,7 +1902,7 @@ def pagina_info():
 4. **Aprobaciones por área** — Jurídica, Arquitectura, Ingeniería de forma independiente.
 5. **Proyección de acto administrativo** — Datos del predio, índices, profesionales, descripción (paz y salvo, certificado de libertad, etc.). Precarga datos del expediente.
 6. **Control de firmas** — Trazabilidad de quién firmó. Configuración de quién debe firmar según modalidad (obra vs re-subdivisión). Siempre firma el Jefe de Planeación. Control de planos sellados.
-7. **Notificación** — Oficio de solicitud de presentación → notificación personal + oficio de valla → soportes (emisora, foto valla, link web) → ejecutoria → entrega final.
+7. **Notificación** — Oficio de solicitud de presentación → notificación personal + oficio de valla → soportes (emisora, foto valla, link web) → ejecutoria → entrega → **archivo físico** (tomos, folios, n° de caja y ubicación: archivo de gestión / mesa nene / archivo general). Al registrar archivo físico el estado pasa a **Archivado**.
 8. **Reportes e informes** — Filtros + selección de variables + plantillas. Exportación a CSV/Excel. Descarga de la base de datos (.db) y respaldo completo.
 
 ### Usuarios de prueba
