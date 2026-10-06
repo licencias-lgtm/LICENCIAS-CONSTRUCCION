@@ -607,6 +607,20 @@ def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
                                      index=MODALIDADES.index(safe_get(exp, 'modalidad', MODALIDADES[0]))
                                      if safe_get(exp, 'modalidad') in MODALIDADES else 0)
         with col2:
+            # Estado primero (define si hay alertas y conteo de días)
+            _est = safe_get(exp, 'estado', 'Radicado') or 'Radicado'
+            if _est == "Entrega final":
+                _est = "Ejecutoriado"  # estado antiguo eliminado del flujo
+            estado = st.selectbox(
+                "Estado",
+                ESTADOS,
+                index=ESTADOS.index(_est) if _est in ESTADOS else 0,
+                key=f"{pfx}estado",
+            )
+            # Estados cerrados: no alertas ni conteo de días en estudio
+            ESTADOS_CERRADOS = ("Ejecutoriado", "Archivado", "Negado")
+            cerrado = estado in ESTADOS_CERRADOS
+
             # Vencimiento 45 días hábiles
             if fecha_rad:
                 fv45 = sumar_dias_habiles(fecha_rad, 45)
@@ -615,7 +629,9 @@ def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
             st.text_input("Fecha vencimiento (45 días hábiles)",
                           value=fv45.strftime('%Y-%m-%d') if fv45 else '', disabled=True)
             hoy = date.today()
-            if fv45:
+            if cerrado:
+                alerta = "—"  # sin alertas si ya está ejecutoriado / cerrado
+            elif fv45:
                 dias_rest = dias_habiles_entre(hoy, fv45) if fv45 > hoy else -dias_habiles_entre(fv45, hoy)
                 if dias_rest < 0:
                     alerta = f"⚠️ VENCIDO ({abs(dias_rest)} días hábiles)"
@@ -628,15 +644,6 @@ def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
             else:
                 alerta = ""
             st.text_input("Alerta", value=alerta, disabled=True)
-            _est = safe_get(exp, 'estado', 'Radicado') or 'Radicado'
-            if _est == "Entrega final":
-                _est = "Ejecutoriado"  # estado antiguo eliminado del flujo
-            estado = st.selectbox(
-                "Estado",
-                ESTADOS,
-                index=ESTADOS.index(_est) if _est in ESTADOS else 0,
-                key=f"{pfx}estado",
-            )
         with col3:
             num_res = st.text_input("Número de resolución", value=safe_get(exp, 'numero_resolucion', '') or '')
             fecha_res = st.date_input("Fecha resolución",
@@ -765,12 +772,22 @@ def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
             if st.checkbox("Sin fecha salida est.", value=False, key=f"{pfx}sin_fs_est"):
                 fs_est = None
 
-        # Días en estudio (automático)
-        if fecha_rad:
+        # Días en estudio (automático): se detiene si está Ejecutoriado / Archivado / Negado
+        if estado in ("Ejecutoriado", "Archivado", "Negado"):
+            # Conservar el valor ya guardado si existe; no seguir contando
+            prev = safe_get(exp, "dias_en_estudio")
+            try:
+                dias_est = int(prev) if prev is not None else 0
+            except (TypeError, ValueError):
+                dias_est = 0
+            st.metric("Días en estudio", dias_est, help="Conteo detenido: expediente ejecutoriado/cerrado.")
+            st.caption("⏸️ No se cuentan más días en estudio (estado Ejecutoriado / Archivado / Negado).")
+        elif fecha_rad:
             dias_est = dias_habiles_entre(fecha_rad, date.today())
+            st.metric("Número de días en estudio (automático)", dias_est)
         else:
             dias_est = 0
-        st.metric("Número de días en estudio (automático)", dias_est)
+            st.metric("Número de días en estudio (automático)", dias_est)
 
     # ── Sección 5: Acta de observaciones ──
     with st.expander("5. Acta de observaciones y prórroga", expanded=expand_all):
@@ -1360,6 +1377,9 @@ def pagina_notificacion():
 
         conn = get_connection()
         c = conn.cursor()
+        # Si queda Ejecutoriado/cerrado, apagar alerta
+        alerta_upd = "—" if nuevo_estado in ("Ejecutoriado", "Archivado", "Negado") else safe_get(exp, "alerta")
+
         c.execute('''
             UPDATE expedientes SET
                 oficio_solicitud_notificacion=?, fecha_oficio_notificacion=?,
@@ -1367,7 +1387,7 @@ def pagina_notificacion():
                 soporte_publicacion_emisora=?, foto_valla=?, link_publicacion=?,
                 tiene_ejecutoria=?, fecha_ejecutoria=?,
                 fecha_entrega_final=?, persona_recibe=?, entrega_cumplida=?,
-                estado=?, ultima_actualizacion=?
+                estado=?, alerta=?, ultima_actualizacion=?
             WHERE numero_radicado=?
         ''', (
             oficio_sol or None, fmt_date(fecha_oficio),
@@ -1377,6 +1397,7 @@ def pagina_notificacion():
             fmt_date(fecha_ent), persona_rec or None,
             "Sí" if entrega_ok else "No",
             nuevo_estado,
+            alerta_upd,
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             sel
         ))
