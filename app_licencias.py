@@ -95,7 +95,9 @@ def get_connection():
 
 COLUMNAS_EXPEDIENTES = [
     # Identificación y radicación
-    ("numero_radicado", "TEXT UNIQUE"),
+    # NOTA: SQLite no permite UNIQUE en ALTER TABLE ADD COLUMN.
+    # El UNIQUE se declara solo en el CREATE TABLE completo.
+    ("numero_radicado", "TEXT"),
     ("fecha_radicacion", "TEXT"),
     ("modalidad", "TEXT"),
     ("fecha_vencimiento_45", "TEXT"),
@@ -222,13 +224,23 @@ def init_db():
         )
     ''')
 
-    c.execute('''
+    # Crear tabla completa de una sola vez (incluye UNIQUE en numero_radicado).
+    # SQLite NO permite UNIQUE/PRIMARY KEY en ALTER TABLE ADD COLUMN.
+    cols_sql = ",\n            ".join(
+        f"{col} {tipo}" for col, tipo in COLUMNAS_EXPEDIENTES
+    )
+    # Asegurar UNIQUE solo en el CREATE TABLE
+    cols_sql = cols_sql.replace("numero_radicado TEXT", "numero_radicado TEXT UNIQUE", 1)
+
+    c.execute(f'''
         CREATE TABLE IF NOT EXISTS expedientes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {cols_sql}
         )
     ''')
 
-    # Migración: agregar todas las columnas
+    # Migración: agregar columnas que falten en bases de datos antiguas
+    # (sin UNIQUE ni PRIMARY KEY, porque ALTER no los soporta)
     for col, tipo in COLUMNAS_EXPEDIENTES:
         try:
             c.execute(f'ALTER TABLE expedientes ADD COLUMN {col} {tipo}')
