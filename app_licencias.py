@@ -225,9 +225,10 @@ COLUMNAS_EXPEDIENTES = [
     ("link_publicacion", "TEXT"),
     ("tiene_ejecutoria", "TEXT"),
     ("fecha_ejecutoria", "TEXT"),
-    # Entrega final
+    # Entrega final (cumplimiento, no es un estado del flujo)
     ("fecha_entrega_final", "TEXT"),
     ("persona_recibe", "TEXT"),
+    ("entrega_cumplida", "TEXT"),  # Sí / No — chuleo de cumplimiento
     # Meta
     ("revisor_actual", "TEXT"),
     ("observaciones", "TEXT"),
@@ -405,7 +406,7 @@ ESTADOS = [
     "Radicado", "En revisión", "En Acta de Observaciones", "Subsanación",
     "Acto proyectado", "En firmas", "Resolución firmada",
     "Oficio de notificación", "Notificado", "En publicación",
-    "Ejecutoriado", "Entrega final", "Archivado", "Negado", "Inadmitido"
+    "Ejecutoriado", "Archivado", "Negado", "Inadmitido"
 ]
 
 # ─────────────────────────────────────────────
@@ -627,9 +628,15 @@ def _formulario_expediente(es_nuevo: bool, exp, radicado_fijo=None):
             else:
                 alerta = ""
             st.text_input("Alerta", value=alerta, disabled=True)
-            estado = st.selectbox("Estado", ESTADOS,
-                                  index=ESTADOS.index(safe_get(exp, 'estado', 'Radicado'))
-                                  if safe_get(exp, 'estado') in ESTADOS else 0)
+            _est = safe_get(exp, 'estado', 'Radicado') or 'Radicado'
+            if _est == "Entrega final":
+                _est = "Ejecutoriado"  # estado antiguo eliminado del flujo
+            estado = st.selectbox(
+                "Estado",
+                ESTADOS,
+                index=ESTADOS.index(_est) if _est in ESTADOS else 0,
+                key=f"{pfx}estado",
+            )
         with col3:
             num_res = st.text_input("Número de resolución", value=safe_get(exp, 'numero_resolucion', '') or '')
             fecha_res = st.date_input("Fecha resolución",
@@ -1320,28 +1327,36 @@ def pagina_notificacion():
             if st.checkbox("Sin fecha ejecutoria", value=parse_date(safe_get(exp, 'fecha_ejecutoria')) is None, key="sin_fej"):
                 fecha_ej = None
 
-    # 5. Entrega final
-    with st.expander("5. Entrega final"):
-        col1, col2 = st.columns(2)
+    # 5. Entrega (cumplimiento — no cambia el estado del expediente)
+    with st.expander("5. Entrega (cumplimiento)"):
+        st.caption("La entrega es un **cumplimiento** independiente del estado del flujo. No se usa «Entrega final» como estado.")
+        col1, col2, col3 = st.columns(3)
         with col1:
-            fecha_ent = st.date_input("Fecha de entrega final",
+            entrega_ok = st.checkbox(
+                "✅ Entrega cumplida (ya fue entregado)",
+                value=(safe_get(exp, 'entrega_cumplida', '') == 'Sí'),
+                key="entrega_cumplida_chk",
+            )
+        with col2:
+            fecha_ent = st.date_input("Fecha de entrega",
                                       value=parse_date(safe_get(exp, 'fecha_entrega_final')), key="fef")
             if st.checkbox("Sin fecha entrega", value=parse_date(safe_get(exp, 'fecha_entrega_final')) is None, key="sin_fef"):
                 fecha_ent = None
-        with col2:
+        with col3:
             persona_rec = st.text_input("Persona que recibe", value=safe_get(exp, 'persona_recibe', '') or '')
 
     if st.button("💾 Guardar notificación / publicación / entrega", type="primary"):
-        # Determinar estado
+        # Estado del flujo (sin usar «Entrega final»)
         nuevo_estado = safe_get(exp, 'estado')
-        if fecha_ent:
-            nuevo_estado = "Entrega final"
-        elif tiene_ej == "Sí" or fecha_ej:
+        if tiene_ej == "Sí" or fecha_ej:
             nuevo_estado = "Ejecutoriado"
         elif fecha_notif:
             nuevo_estado = "Notificado"
         elif oficio_sol:
             nuevo_estado = "Oficio de notificación"
+        # Si el estado anterior era el viejo "Entrega final", normalizar
+        if nuevo_estado == "Entrega final":
+            nuevo_estado = "Ejecutoriado"
 
         conn = get_connection()
         c = conn.cursor()
@@ -1351,7 +1366,7 @@ def pagina_notificacion():
                 fecha_notificacion_personal=?, oficio_fijacion_valla=?,
                 soporte_publicacion_emisora=?, foto_valla=?, link_publicacion=?,
                 tiene_ejecutoria=?, fecha_ejecutoria=?,
-                fecha_entrega_final=?, persona_recibe=?,
+                fecha_entrega_final=?, persona_recibe=?, entrega_cumplida=?,
                 estado=?, ultima_actualizacion=?
             WHERE numero_radicado=?
         ''', (
@@ -1360,6 +1375,7 @@ def pagina_notificacion():
             soporte_emisora or None, foto_valla or None, link_pub or None,
             tiene_ej or None, fmt_date(fecha_ej),
             fmt_date(fecha_ent), persona_rec or None,
+            "Sí" if entrega_ok else "No",
             nuevo_estado,
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             sel
@@ -1372,122 +1388,57 @@ def pagina_notificacion():
 # ─────────────────────────────────────────────
 # Reportes
 # ─────────────────────────────────────────────
-# Diccionario de variables disponibles para reportes (nombre legible → columna BD)
-VARIABLES_REPORTE = {
-    "N° Radicado": "numero_radicado",
-    "Fecha radicación": "fecha_radicacion",
-    "Modalidad": "modalidad",
-    "Estado": "estado",
-    "Fecha vencimiento 45 días": "fecha_vencimiento_45",
-    "Alerta": "alerta",
-    "N° Resolución": "numero_resolucion",
-    "Fecha resolución": "fecha_resolucion",
-    "Propietario": "propietario",
-    "Cédula / NIT": "cedula_titular",
-    "Apoderado": "apoderado",
-    "Celular": "celular",
-    "Persona autoriza": "persona_autoriza",
-    "Ficha catastral": "ficha_catastral",
-    "Matrícula inmobiliaria": "matricula_inmobiliaria",
-    "Dirección": "direccion",
-    "Barrio": "barrio",
-    "Zona": "zona",
-    "Superficie (m²)": "superficie",
-    "Valor obra": "valor_obra",
-    "Pago 30% anticipo": "pago_30_anticipo",
-    "Valor pago 30%": "valor_pago_30",
-    "N° recibo Hacienda 30%": "numero_recibo_30",
-    "Saldo 70%": "saldo_70",
-    "Valor pago 70%": "valor_pago_70",
-    "N° recibo Hacienda 70%": "numero_recibo_70",
-    "Confirma pago 70%": "confirma_pago_70",
-    "Fecha ingreso jurídica": "fecha_ingreso_juridica",
-    "Fecha salida jurídica": "fecha_salida_juridica",
-    "Fecha ingreso arquitectura": "fecha_ingreso_arquitectura",
-    "Fecha salida arquitectura": "fecha_salida_arquitectura",
-    "Fecha ingreso estructural": "fecha_ingreso_estructural",
-    "Fecha salida estructural": "fecha_salida_estructural",
-    "Días en estudio": "dias_en_estudio",
-    "Fecha elaboración acta": "fecha_elaboracion_acta",
-    "N° Acta": "numero_acta",
-    "Radicado salida acta": "radicado_salida_acta",
-    "Fecha radicado acta": "fecha_radicado_acta",
-    "Tiene prórroga": "tiene_prorroga",
-    "Fecha vencimiento subsanación": "fecha_vencimiento_subsanacion",
-    "Radicado entrada corrección": "radicado_entrada_correccion",
-    "Fecha radicado corrección": "fecha_radicado_correccion",
-    "Fecha acta finalización": "fecha_acta_finalizacion",
-    "Aprobación jurídica": "aprobacion_juridica",
-    "Aprobación arquitectura": "aprobacion_arquitectura",
-    "Aprobación ingeniería": "aprobacion_ingenieria",
-    "Área predio": "area_predio",
-    "Área libre": "area_libre",
-    "N° pisos": "numero_pisos",
-    "N° vivienda": "numero_vivienda",
-    "Área primer piso": "area_primer_piso",
-    "Área segundo piso": "area_segundo_piso",
-    "Área existente": "area_existente",
-    "Área ampliación": "area_ampliacion",
-    "Área total construida": "area_total_construida",
-    "Índice ocupación": "indice_ocupacion",
-    "Índice construcción": "indice_construccion",
-    "Sector": "sector",
-    "Ubicación predio": "ubicacion_predio",
-    "Prof. arquitectónico": "profesional_arquitectonico",
-    "Prof. estructural": "profesional_estructural",
-    "Cant. planos arq.": "cantidad_planos_arq",
-    "Cant. planos est.": "cantidad_planos_est",
-    "Firma jurídico": "firma_juridico",
-    "Firma arquitecto": "firma_arquitecto",
-    "Firma ingeniero": "firma_ingeniero",
-    "Firma jefe planeación": "firma_jefe_planeacion",
-    "Planos sellados": "planos_sellados",
-    "Fecha notificación personal": "fecha_notificacion_personal",
-    "Tiene ejecutoria": "tiene_ejecutoria",
-    "Fecha ejecutoria": "fecha_ejecutoria",
-    "Fecha entrega final": "fecha_entrega_final",
-    "Persona recibe": "persona_recibe",
-    "Observaciones": "observaciones",
-    "Última actualización": "ultima_actualizacion",
-}
+COLS_BASE = [
+    "numero_radicado", "fecha_radicacion", "modalidad", "estado", "propietario",
+    "cedula_titular", "direccion", "barrio", "fecha_vencimiento_45", "alerta",
+    "numero_resolucion",
+]
 
-PRESETS_REPORTE = {
-    "Básico (radicado, fechas, estado, propietario)": [
-        "N° Radicado", "Fecha radicación", "Modalidad", "Estado",
-        "Propietario", "Fecha vencimiento 45 días", "Alerta", "N° Resolución"
-    ],
-    "Plazos y alertas": [
-        "N° Radicado", "Propietario", "Estado", "Fecha radicación",
-        "Fecha vencimiento 45 días", "Alerta", "Días en estudio",
-        "Fecha ingreso jurídica", "Fecha salida jurídica",
-        "Fecha ingreso arquitectura", "Fecha salida arquitectura",
-        "Fecha ingreso estructural", "Fecha salida estructural",
-        "Fecha vencimiento subsanación"
-    ],
-    "Aprobaciones y firmas": [
-        "N° Radicado", "Propietario", "Estado", "Modalidad",
-        "Aprobación jurídica", "Aprobación arquitectura", "Aprobación ingeniería",
-        "Firma jurídico", "Firma arquitecto", "Firma ingeniero", "Firma jefe planeación",
-        "Planos sellados", "N° Resolución", "Fecha resolución"
-    ],
-    "Datos del predio y acto": [
-        "N° Radicado", "Propietario", "Modalidad", "Dirección", "Barrio", "Zona",
-        "Ficha catastral", "Matrícula inmobiliaria", "Superficie (m²)", "Valor obra",
-        "Área predio", "Área libre", "N° pisos", "N° vivienda",
-        "Área total construida", "Índice ocupación", "Índice construcción",
-        "Sector", "Ubicación predio", "Prof. arquitectónico", "Prof. estructural"
-    ],
-    "Notificación y entrega": [
-        "N° Radicado", "Propietario", "Estado", "N° Resolución", "Fecha resolución",
-        "Fecha notificación personal", "Tiene ejecutoria", "Fecha ejecutoria",
-        "Fecha entrega final", "Persona recibe"
-    ],
-    "Completo (todas las variables)": list(VARIABLES_REPORTE.keys()),
-}
+COLS_PAGOS = COLS_BASE + [
+    "pago_30_anticipo", "valor_pago_30", "numero_recibo_30",
+    "saldo_70", "valor_pago_70", "numero_recibo_70", "confirma_pago_70", "valor_obra",
+]
+
+COLS_VENC = COLS_BASE + ["dias_en_estudio", "fecha_ingreso_juridica", "fecha_vencimiento_subsanacion"]
+
+def _df_existentes(df, cols):
+    return [c for c in cols if c in df.columns]
+
+def _descargar_reporte(df_rep, nombre_base):
+    st.subheader("Descargar")
+    c1, c2 = st.columns(2)
+    csv_data = df_rep.to_csv(index=False).encode("utf-8-sig")
+    with c1:
+        st.download_button(
+            "⬇️ CSV",
+            data=csv_data,
+            file_name=f"{nombre_base}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"dl_csv_{nombre_base}",
+        )
+    try:
+        from io import BytesIO
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df_rep.to_excel(writer, index=False, sheet_name="Reporte")
+        buf.seek(0)
+        with c2:
+            st.download_button(
+                "⬇️ Excel",
+                data=buf,
+                file_name=f"{nombre_base}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"dl_xlsx_{nombre_base}",
+            )
+    except Exception:
+        with c2:
+            st.caption("Instala openpyxl para Excel.")
 
 def pagina_reportes():
     st.title("📑 Reportes")
-    st.caption("Genera reportes personalizados eligiendo filtros y variables. Descarga en CSV o Excel.")
+    st.caption("Reportes fijos por estado, pagos, mes, vencidas y próximas a vencer.")
 
     conn = get_connection()
     try:
@@ -1502,186 +1453,146 @@ def pagina_reportes():
         st.warning("No hay expedientes registrados todavía.")
         return
 
-    # ── Filtros ──
-    with st.expander("🔍 Filtros", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            estados_disp = ["Todos"] + sorted([x for x in df["estado"].dropna().unique().tolist() if x])
-            filtro_estado = st.multiselect("Estado", estados_disp, default=["Todos"])
-            modalidades_disp = ["Todas"] + sorted([x for x in df["modalidad"].dropna().unique().tolist() if x])
-            filtro_mod = st.multiselect("Modalidad", modalidades_disp, default=["Todas"])
-        with col2:
-            fecha_desde = st.date_input("Fecha radicación desde", value=None, key="rep_desde")
-            fecha_hasta = st.date_input("Fecha radicación hasta", value=None, key="rep_hasta")
-            solo_alertas = st.checkbox("Solo con alerta de vencimiento (≤ 5 días o vencidos)", value=False)
-        with col3:
-            texto_busqueda = st.text_input("Buscar texto (radicado, propietario, cédula, ficha…)")
-            zona_disp = ["Todas"] + sorted([x for x in df.get("zona", pd.Series(dtype=str)).dropna().unique().tolist() if x])
-            filtro_zona = st.selectbox("Zona", zona_disp)
+    # Normalizar estados antiguos "Entrega final"
+    if "estado" in df.columns:
+        df["estado"] = df["estado"].replace({"Entrega final": "Ejecutoriado"})
 
-    # Aplicar filtros
-    df_f = df.copy()
-    if filtro_estado and "Todos" not in filtro_estado:
-        df_f = df_f[df_f["estado"].isin(filtro_estado)]
-    if filtro_mod and "Todas" not in filtro_mod:
-        df_f = df_f[df_f["modalidad"].isin(filtro_mod)]
-    if fecha_desde:
-        df_f = df_f[df_f["fecha_radicacion"].apply(lambda x: parse_date(x) is not None and parse_date(x) >= fecha_desde)]
-    if fecha_hasta:
-        df_f = df_f[df_f["fecha_radicacion"].apply(lambda x: parse_date(x) is not None and parse_date(x) <= fecha_hasta)]
-    if filtro_zona != "Todas":
-        df_f = df_f[df_f.get("zona", pd.Series(dtype=str)) == filtro_zona]
-    if texto_busqueda:
-        mask = (
-            df_f["numero_radicado"].astype(str).str.contains(texto_busqueda, case=False, na=False) |
-            df_f["propietario"].astype(str).str.contains(texto_busqueda, case=False, na=False) |
-            df_f.get("cedula_titular", pd.Series([""] * len(df_f))).astype(str).str.contains(texto_busqueda, case=False, na=False) |
-            df_f.get("ficha_catastral", pd.Series([""] * len(df_f))).astype(str).str.contains(texto_busqueda, case=False, na=False) |
-            df_f.get("direccion", pd.Series([""] * len(df_f))).astype(str).str.contains(texto_busqueda, case=False, na=False)
-        )
-        df_f = df_f[mask]
-    if solo_alertas:
-        hoy = date.today()
-        def tiene_alerta(row):
-            fv = parse_date(row.get("fecha_vencimiento_45"))
-            estado = str(row.get("estado") or "")
-            if not fv or estado in ("Ejecutoriado", "Archivado", "Negado", "Entrega final"):
-                return False
-            return fv <= hoy + timedelta(days=5)
-        df_f = df_f[df_f.apply(tiene_alerta, axis=1)]
-
-    # ── Selección de variables ──
-    st.subheader("Variables del reporte")
-    preset = st.selectbox("Plantilla rápida", list(PRESETS_REPORTE.keys()), index=0)
-    vars_default = PRESETS_REPORTE[preset]
-
-    # Multiselect con nombres legibles
-    vars_seleccionadas = st.multiselect(
-        "Selecciona las columnas a incluir",
-        options=list(VARIABLES_REPORTE.keys()),
-        default=[v for v in vars_default if v in VARIABLES_REPORTE],
-        help="Puedes combinar la plantilla con columnas adicionales."
+    tipo = st.radio(
+        "Tipo de reporte",
+        [
+            "Por estado de licencia",
+            "Por pagos y pendientes",
+            "Por mes de radicación",
+            "Vencidas",
+            "Próximas a vencer",
+        ],
+        horizontal=False,
+        key="tipo_reporte",
     )
 
-    if not vars_seleccionadas:
-        st.warning("Selecciona al menos una variable.")
-        return
+    hoy = date.today()
+    df_rep = pd.DataFrame()
+    titulo = tipo
 
-    # Construir DataFrame del reporte
-    cols_bd = [VARIABLES_REPORTE[v] for v in vars_seleccionadas]
-    # Solo columnas que existan en el df
-    cols_existentes = [c for c in cols_bd if c in df_f.columns]
-    nombres_existentes = [v for v, c in zip(vars_seleccionadas, cols_bd) if c in df_f.columns]
+    # ── Por estado ──
+    if tipo == "Por estado de licencia":
+        estados_disp = ["Todos"] + sorted([x for x in df["estado"].dropna().unique().tolist() if x and x != "Entrega final"])
+        sel = st.multiselect("Estado(s)", estados_disp, default=["Todos"], key="rep_estados")
+        df_rep = df.copy()
+        if sel and "Todos" not in sel:
+            df_rep = df_rep[df_rep["estado"].isin(sel)]
+        cols = _df_existentes(df_rep, COLS_BASE + ["entrega_cumplida", "fecha_entrega_final"])
+        df_rep = df_rep[cols] if cols else df_rep
+        st.write("**Resumen por estado**")
+        if "estado" in df.columns:
+            st.dataframe(df["estado"].value_counts().rename_axis("Estado").reset_index(name="Cantidad"),
+                         use_container_width=True, hide_index=True)
 
-    if not cols_existentes:
-        st.error("Ninguna de las columnas seleccionadas existe en los datos.")
-        return
-
-    df_rep = df_f[cols_existentes].copy()
-    df_rep.columns = nombres_existentes  # nombres legibles
-
-    # Resumen
-    col_m1, col_m2, col_m3 = st.columns(3)
-    with col_m1:
-        st.metric("Expedientes en el reporte", len(df_rep))
-    with col_m2:
-        st.metric("Columnas seleccionadas", len(df_rep.columns))
-    with col_m3:
-        if "Estado" in df_rep.columns:
-            st.metric("Estados distintos", df_rep["Estado"].nunique())
-
-    st.dataframe(df_rep, use_container_width=True, hide_index=True)
-
-    # ── Descargas ──
-    st.subheader("Descargar reporte")
-    col_d1, col_d2 = st.columns(2)
-
-    # CSV
-    csv_data = df_rep.to_csv(index=False).encode("utf-8-sig")
-    with col_d1:
-        st.download_button(
-            label="⬇️ Descargar CSV",
-            data=csv_data,
-            file_name=f"reporte_licencias_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True,
+    # ── Pagos ──
+    elif tipo == "Por pagos y pendientes":
+        sub = st.radio(
+            "Filtro de pagos",
+            ["Todos", "Solo pagos completos (30% y 70% = Sí)", "Pagos pendientes (30% o 70% pendiente/no)", "Sin registro de pago"],
+            key="rep_pago_filtro",
         )
+        df_rep = df.copy()
+        p30 = df_rep.get("pago_30_anticipo", pd.Series([""] * len(df_rep))).astype(str).str.strip()
+        s70 = df_rep.get("saldo_70", pd.Series([""] * len(df_rep))).astype(str).str.strip()
+        if sub == "Solo pagos completos (30% y 70% = Sí)":
+            df_rep = df_rep[(p30 == "Sí") & (s70 == "Sí")]
+        elif sub == "Pagos pendientes (30% o 70% pendiente/no)":
+            df_rep = df_rep[
+                p30.isin(["", "No", "Pendiente"]) | s70.isin(["", "No", "Pendiente"])
+            ]
+        elif sub == "Sin registro de pago":
+            df_rep = df_rep[(p30 == "") | (p30 == "None") | p30.isna()]
+        cols = _df_existentes(df_rep, COLS_PAGOS)
+        df_rep = df_rep[cols] if cols else df_rep
+        # Métricas
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Registros en reporte", len(df_rep))
+        with m2:
+            if "valor_pago_30" in df.columns:
+                st.metric("Suma valores 30%", f"$ {pd.to_numeric(df_rep.get('valor_pago_30', 0), errors='coerce').fillna(0).sum():,.0f}")
+        with m3:
+            if "valor_pago_70" in df.columns:
+                st.metric("Suma valores 70%", f"$ {pd.to_numeric(df_rep.get('valor_pago_70', 0), errors='coerce').fillna(0).sum():,.0f}")
 
-    # Excel
-    try:
-        from io import BytesIO
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df_rep.to_excel(writer, index=False, sheet_name="Reporte")
-        buffer.seek(0)
-        with col_d2:
-            st.download_button(
-                label="⬇️ Descargar Excel",
-                data=buffer,
-                file_name=f"reporte_licencias_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-    except Exception:
-        with col_d2:
-            st.info("Para Excel instala `openpyxl` (pip install openpyxl). Mientras tanto usa CSV.")
-
-    # Resumen por estado / modalidad (si están en el reporte o en los datos filtrados)
-    st.divider()
-    st.subheader("Resúmenes rápidos")
-    c1, c2 = st.columns(2)
-    with c1:
-        if "estado" in df_f.columns:
-            resumen_est = df_f["estado"].value_counts().reset_index()
-            resumen_est.columns = ["Estado", "Cantidad"]
-            st.write("**Por estado**")
-            st.dataframe(resumen_est, use_container_width=True, hide_index=True)
-    with c2:
-        if "modalidad" in df_f.columns:
-            resumen_mod = df_f["modalidad"].value_counts().reset_index()
-            resumen_mod.columns = ["Modalidad", "Cantidad"]
-            st.write("**Por modalidad**")
-            st.dataframe(resumen_mod, use_container_width=True, hide_index=True)
-
-    # ── Respaldo de base de datos y exportación completa ──
-    st.divider()
-    st.subheader("💾 Respaldo y base de datos")
-    st.caption("Descarga la base de datos completa o un Excel con todos los expedientes (todas las columnas).")
-
-    col_b1, col_b2, col_b3 = st.columns(3)
-
-    # Descargar archivo .db
-    with col_b1:
-        boton_descarga_bd(key_suffix="reportes")
-
-    # Excel completo (todas las columnas de expedientes filtrados)
-    with col_b2:
-        try:
-            from io import BytesIO
-            buf_full = BytesIO()
-            with pd.ExcelWriter(buf_full, engine="openpyxl") as writer:
-                df_f.to_excel(writer, index=False, sheet_name="Expedientes")
-            buf_full.seek(0)
-            st.download_button(
-                label="⬇️ Excel completo (filtrado)",
-                data=buf_full,
-                file_name=f"expedientes_completo_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        except Exception:
-            st.caption("Instala openpyxl para Excel completo.")
-
-    # CSV completo
-    with col_b3:
-        csv_full = df_f.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            label="⬇️ CSV completo (filtrado)",
-            data=csv_full,
-            file_name=f"expedientes_completo_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True,
+    # ── Por mes ──
+    elif tipo == "Por mes de radicación":
+        años = sorted({
+            str(parse_date(x).year)
+            for x in df["fecha_radicacion"].dropna()
+            if parse_date(x)
+        }, reverse=True)
+        if not años:
+            st.warning("No hay fechas de radicación para agrupar por mes.")
+            return
+        anio = st.selectbox("Año", años, key="rep_anio")
+        mes = st.selectbox(
+            "Mes",
+            list(range(1, 13)),
+            format_func=lambda m: [
+                "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+            ][m],
+            key="rep_mes",
         )
+        def _en_mes(val):
+            d = parse_date(val)
+            return d is not None and d.year == int(anio) and d.month == int(mes)
+        df_rep = df[df["fecha_radicacion"].apply(_en_mes)].copy()
+        cols = _df_existentes(df_rep, COLS_BASE)
+        df_rep = df_rep[cols] if cols else df_rep
+        titulo = f"Radicaciones {anio}-{int(mes):02d}"
+        st.metric("Expedientes en el mes", len(df_rep))
+
+    # ── Vencidas ──
+    elif tipo == "Vencidas":
+        def _vencida(row):
+            fv = parse_date(row.get("fecha_vencimiento_45"))
+            estado = str(row.get("estado") or "")
+            if not fv or estado in ("Ejecutoriado", "Archivado", "Negado"):
+                return False
+            return fv < hoy
+        df_rep = df[df.apply(_vencida, axis=1)].copy()
+        cols = _df_existentes(df_rep, COLS_VENC)
+        df_rep = df_rep[cols] if cols else df_rep
+        st.metric("Expedientes vencidos", len(df_rep))
+
+    # ── Próximas a vencer ──
+    else:
+        dias_aviso = st.slider("Días hábiles de anticipación", 1, 15, 5, key="rep_dias_aviso")
+        def _proxima(row):
+            fv = parse_date(row.get("fecha_vencimiento_45"))
+            estado = str(row.get("estado") or "")
+            if not fv or estado in ("Ejecutoriado", "Archivado", "Negado"):
+                return False
+            if fv < hoy:
+                return False  # ya vencidas van en otro reporte
+            limite = hoy + timedelta(days=dias_aviso * 2)  # margen calendario; filtramos con días hábiles abajo
+            if fv > limite:
+                return False
+            rest = dias_habiles_entre(hoy, fv)
+            return 0 <= rest <= dias_aviso
+        df_rep = df[df.apply(_proxima, axis=1)].copy()
+        cols = _df_existentes(df_rep, COLS_VENC)
+        df_rep = df_rep[cols] if cols else df_rep
+        st.metric(f"Próximas a vencer (≤ {dias_aviso} días hábiles)", len(df_rep))
+
+    st.divider()
+    st.write(f"**{titulo}** — {len(df_rep)} registro(s)")
+    if df_rep.empty:
+        st.info("No hay registros para este reporte con los filtros actuales.")
+    else:
+        st.dataframe(df_rep, use_container_width=True, hide_index=True)
+        _descargar_reporte(df_rep, "reporte_" + tipo.lower().replace(" ", "_")[:30])
+
+    # Respaldo BD
+    st.divider()
+    st.subheader("💾 Respaldo de base de datos")
+    boton_descarga_bd(key_suffix="reportes")
 
 # ─────────────────────────────────────────────
 # Información
